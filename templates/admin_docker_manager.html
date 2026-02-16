@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Docker Manager Configuration</title>
+  </head>
+  <body>
+    <h1>Docker Manager Configuration</h1>
+    <form method="post">
+      <table>
+        {% for attr, val in values.items() %}
+        <tr>
+          <td>{{ attr }}</td>
+          <td><input type="text" name="{{ keyfn(attr) }}" value="{{ val }}"/></td>
+        </tr>
+        {% endfor %}
+      </table>
+      <p><button type="submit">Save</button></p>
+    </form>
+  </body>
+</html>

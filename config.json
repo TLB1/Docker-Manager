@@ -1,0 +1,6 @@
+[
+    {
+        "name": "Docker Manager",
+        "route": "/admin/docker_manager"
+    }
+]

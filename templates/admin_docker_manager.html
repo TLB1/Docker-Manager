@@ -9,6 +9,31 @@
       <form id="docker-config-form" onsubmit="return false;">
         <table class="table table-striped">
           <tbody>
+            <tr>
+  <td><strong>Worker Nodes</strong></td>
+  <td>
+    <div id="worker-nodes-list">
+      {% if values.WORKER_NODES %}
+        {% for node in values.WORKER_NODES %}
+        <div class="input-group mb-1 worker-node-entry">
+          <input type="text" class="form-control worker-node-input" value="{{ node }}" placeholder="user@host">
+          <button type="button" class="btn btn-danger remove-node-btn">X</button>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="input-group mb-1 worker-node-entry">
+          <input type="text" class="form-control worker-node-input" placeholder="user@host">
+          <button type="button" class="btn btn-danger remove-node-btn">X</button>
+        </div>
+      {% endif %}
+    </div>
+    <button type="button" id="add-node-btn" class="btn btn-secondary mt-1">+ Add Node</button>
+    <small class="form-text text-muted">
+      Define the Docker worker nodes. Click + to add a new node. Format: <code>user@host</code>.
+    </small>
+  </td>
+</tr>
+
   <tr>
     <td><strong>Max Active Containers Per Group</strong></td>
     <td>
@@ -171,6 +196,30 @@ const MB = 1024 * 1024;
 const CPU_PERIOD = 100000; // Docker default period used to compute quota
 const MINUTE = 60;
 
+// Add new worker node input
+document.getElementById('add-node-btn').addEventListener('click', () => {
+  const container = document.getElementById('worker-nodes-list');
+
+  const div = document.createElement('div');
+  div.className = 'input-group mb-1 worker-node-entry';
+  div.innerHTML = `
+    <input type="text" class="form-control worker-node-input" placeholder="user@host">
+    <button type="button" class="btn btn-danger remove-node-btn">X</button>
+  `;
+  container.appendChild(div);
+
+  // attach remove handler
+  div.querySelector('.remove-node-btn').addEventListener('click', () => div.remove());
+});
+
+// Attach remove handlers to existing nodes
+document.querySelectorAll('.remove-node-btn').forEach(btn => {
+  btn.addEventListener('click', e => {
+    e.target.closest('.worker-node-entry').remove();
+  });
+});
+
+
 async function saveConfig() {
   const btn = document.getElementById('save-btn');
   const status = document.getElementById('save-status');
@@ -208,6 +257,15 @@ async function saveConfig() {
       const minutes = parseInt(input.value || 0, 10);
       data[field] = Math.max(0, minutes) * MINUTE;
     });
+
+    // Worker nodes: collect from all dynamic inputs
+    const workerNodes = [];
+    document.querySelectorAll('.worker-node-input').forEach(input => {
+      const val = input.value.trim();
+      if (val) workerNodes.push(val);
+  });
+data['docker_worker_nodes'] = workerNodes;
+
 
 
     // POST to backend API (must exist)

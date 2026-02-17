@@ -6,52 +6,237 @@
     <div class="col-md-12">
       <h1>Docker Manager Configuration</h1>
 
-      <form method="post">
-
+      <form id="docker-config-form" onsubmit="return false;">
         <table class="table table-striped">
-          {% for attr, val in values.items() %}
-          <tr>
-            <td><strong>{{ attr }}</strong></td>
-            <td>
-              <input
-                type="text"
-                name="{{ keyfn(attr) }}"
-                value="{{ val }}"
-                class="form-control"
-              />
-            </td>
-          </tr>
-          {% endfor %}
+          <tbody>
+  <tr>
+    <td><strong>Max Active Containers Per Group</strong></td>
+    <td>
+      <input type="number" name="docker_max_active_containers_per_group"
+             value="{{ values.MAX_ACTIVE_CONTAINERS_PER_GROUP }}"
+             class="form-control" min="0">
+      <small class="form-text text-muted">
+        Maximum number of running containers allowed per team/group.
+      </small>
+    </td>
+  </tr>
+
+  <tr>
+  <td><strong>Container Suspension Interval</strong></td>
+  <td>
+    <div class="input-group">
+      <input
+        type="number"
+        step="1"
+        class="form-control minutes-field"
+        data-seconds-field="docker_container_suspension_interval"
+        value="{{ (values.CONTAINER_SUSPENSION_INTERVAL // 60) if values.CONTAINER_SUSPENSION_INTERVAL else 0 }}"
+        min="0"
+      >
+      <span class="input-group-text">min</span>
+    </div>
+    <small class="form-text text-muted">
+      Time of inactivity before a container is automatically suspended.
+    </small>
+  </td>
+</tr>
+
+
+  <tr>
+  <td><strong>Container Inactivity Termination</strong></td>
+  <td>
+    <div class="input-group">
+      <input
+        type="number"
+        step="1"
+        class="form-control minutes-field"
+        data-seconds-field="docker_docker_container_lifetime"
+        value="{{ (values.DOCKER_CONTAINER_LIFETIME // 60) if values.DOCKER_CONTAINER_LIFETIME else 0 }}"
+        min="0"
+      >
+      <span class="input-group-text">min</span>
+    </div>
+    <small class="form-text text-muted">
+      Time of inactivity before a container is automatically removed from the system.
+    </small>
+  </td>
+</tr>
+
+
+  <tr>
+    <td><strong>Memory Limit Per Container</strong></td>
+    <td>
+      <div class="input-group">
+        <input type="number"
+               step="1"
+               class="form-control memory-mb"
+               data-bytes-field="docker_mem_limit_per_container"
+               value="{{ (values.MEM_LIMIT_PER_CONTAINER // (1024*1024)) if values.MEM_LIMIT_PER_CONTAINER is not none else 0 }}"
+               min="0">
+        <span class="input-group-text">MB</span>
+      </div>
+      <small class="form-text text-muted">
+        Maximum RAM available to each container.
+      </small>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Reserved System Memory</strong></td>
+    <td>
+      <div class="input-group">
+        <input type="number"
+               step="1"
+               class="form-control memory-mb"
+               data-bytes-field="docker_max_spare_ram"
+               value="{{ (values.MAX_SPARE_RAM // (1024*1024)) if values.MAX_SPARE_RAM is not none else 0 }}"
+               min="0">
+        <span class="input-group-text">MB</span>
+      </div>
+      <small class="form-text text-muted">
+        Amount of RAM to keep free to prevent system exhaustion.
+      </small>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>CPU Cores Per Container</strong></td>
+    <td>
+      <div class="input-group">
+        <input type="number"
+               step="0.1"
+               class="form-control cpu-cores"
+               data-quota-field="docker_docker_container_cpu_quota"
+               value="{{ ((values.DOCKER_CONTAINER_CPU_QUOTA / 100000) | round(2, 'common')) if values.DOCKER_CONTAINER_CPU_QUOTA is not none else 0 }}"
+               min="0">
+        <span class="input-group-text">cores</span>
+      </div>
+      <small class="form-text text-muted">
+        CPU allocation per container (e.g., 0.5 = half a core, 1 = full core).
+      </small>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Docker Network Name</strong></td>
+    <td>
+      <input type="text" name="docker_docker_container_network"
+             value="{{ values.DOCKER_CONTAINER_NETWORK }}"
+             class="form-control">
+      <small class="form-text text-muted">
+        Docker network used to attach challenge containers.
+      </small>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Internal Port Range Start</strong></td>
+    <td>
+      <input type="number" name="docker_internal_port_range_start"
+             value="{{ values.INTERNAL_PORT_RANGE_START }}"
+             class="form-control" min="1" max="65535">
+      <small class="form-text text-muted">
+        Starting port number for dynamically assigned internal container ports.
+      </small>
+    </td>
+  </tr>
+
+  <tr>
+    <td><strong>Internal Port Range End</strong></td>
+    <td>
+      <input type="number" name="docker_internal_port_range_end"
+             value="{{ values.INTERNAL_PORT_RANGE_END }}"
+             class="form-control" min="1" max="65535">
+      <small class="form-text text-muted">
+        Ending port number for dynamically assigned internal container ports.
+      </small>
+    </td>
+  </tr>
+</tbody>
+
         </table>
 
-        <button type="button" onclick="saveConfig()" class="btn btn-primary">Save</button>
+        <div class="mb-3">
+          <button id="save-btn" type="button" onclick="saveConfig()" class="btn btn-primary">Save</button>
+          <span id="save-status" style="margin-left:12px;"></span>
+        </div>
       </form>
     </div>
   </div>
 </div>
 
 <script>
-function saveConfig() {
-  const data = {};
+/* Constants */
+const MB = 1024 * 1024;
+const CPU_PERIOD = 100000; // Docker default period used to compute quota
+const MINUTE = 60;
 
-  document.querySelectorAll("input").forEach(input => {
-    data[input.name] = input.value;
-  });
+async function saveConfig() {
+  const btn = document.getElementById('save-btn');
+  const status = document.getElementById('save-status');
 
-  fetch("{{ url_for('admin_docker_manager.save_config') }}", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "CSRF-Token": "{{ Session.nonce }}"
-    },
-    body: JSON.stringify(data)
-  })
-  .then(r => r.json())
-  .then(r => {
-    if (r.success) {
-      location.reload();
+  btn.disabled = true;
+  status.textContent = 'Saving...';
+
+  try {
+    const data = {};
+
+    // collect inputs which already have a name (normal fields)
+    document.querySelectorAll('input[name]').forEach(input => {
+      data[input.name] = input.value;
+    });
+
+    // Memory inputs: MB -> bytes, data-bytes-field contains target key
+    document.querySelectorAll('.memory-mb').forEach(input => {
+      const field = input.dataset.bytesField;
+      const mb = parseInt(input.value || 0, 10);
+      data[field] = Math.max(0, mb) * MB;
+    });
+
+    // CPU cores inputs: cores -> quota
+    document.querySelectorAll('.cpu-cores').forEach(input => {
+      const field = input.dataset.quotaField;
+      const cores = parseFloat(input.value || 0);
+      // clamp negative to 0
+      const quota = Math.round(Math.max(0, cores) * CPU_PERIOD);
+      data[field] = quota;
+    });
+
+    // Minutes inputs: minutes -> seconds
+    document.querySelectorAll('.minutes-field').forEach(input => {
+      const field = input.dataset.secondsField;
+      const minutes = parseInt(input.value || 0, 10);
+      data[field] = Math.max(0, minutes) * MINUTE;
+    });
+
+
+    // POST to backend API (must exist)
+    const resp = await fetch("{{ url_for('admin_docker_manager.save_config') }}", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CSRF-Token": "{{ Session.nonce }}"
+      },
+      body: JSON.stringify(data)
+    });
+
+    const result = await resp.json();
+
+    if (result && result.success) {
+      status.textContent = 'Saved.';
+      // small delay to let user see message, then reload
+      setTimeout(() => location.reload(), 600);
+    } else {
+      const err = result && result.error ? result.error : 'Unknown error';
+      status.textContent = '';
+      alert('Error saving settings: ' + err);
+      btn.disabled = false;
     }
-  });
+  } catch (e) {
+    alert('Network error: ' + e);
+    btn.disabled = false;
+    status.textContent = '';
+  }
 }
 </script>
 {% endblock %}

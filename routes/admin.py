@@ -19,12 +19,9 @@ admin_docker = Blueprint(
 
 
 
-@admin_docker.route("/admin/docker_manager", methods=["GET", "POST"])
+@admin_docker.route("/admin/docker_manager", methods=["GET"])
 @admins_only
 def docker_manager_admin():
-    if request.method == "POST":
-        save_runtime_config(request.form)
-        return redirect(url_for("admin_docker_manager.docker_manager_admin"))
 
     load_runtime_config()
     values = {attr: getattr(RuntimeConfig, attr) for attr in load_runtime_config.__globals__['RUNTIME_ATTRS']}

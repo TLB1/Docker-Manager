@@ -16,6 +16,9 @@ admin_docker = Blueprint(
     static_folder=os.path.join(BASE_DIR, "assets"),
 )
 
+
+
+
 @admin_docker.route("/admin/docker_manager", methods=["GET", "POST"])
 @admins_only
 def docker_manager_admin():
@@ -27,6 +30,17 @@ def docker_manager_admin():
     values = {attr: getattr(RuntimeConfig, attr) for attr in load_runtime_config.__globals__['RUNTIME_ATTRS']}
     return render_template("admin_docker_manager.html", values=values, keyfn=config_key)
 
+
+
+@admin_docker.route("/admin/docker_manager/save", methods=["POST"])
+@admins_only
+def save_config():
+    data = request.get_json()
+    save_runtime_config(data)
+    return {"success": True}
+
+
+
 def load(app):
     app.register_blueprint(admin_docker)
     load_runtime_config()
@@ -37,6 +51,9 @@ def load(app):
         app.docker_manager = DockerManager(base_urls=base_urls)
     except Exception:
         app.docker_manager = None
+
+
+
 
 def unload(app):
     return None

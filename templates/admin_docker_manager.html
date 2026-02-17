@@ -1,20 +1,57 @@
-<!doctype html>
-<html>
-  <head>
-    <title>Docker Manager Configuration</title>
-  </head>
-  <body>
-    <h1>Docker Manager Configuration</h1>
-    <form method="post">
-      <table>
-        {% for attr, val in values.items() %}
-        <tr>
-          <td>{{ attr }}</td>
-          <td><input type="text" name="{{ keyfn(attr) }}" value="{{ val }}"/></td>
-        </tr>
-        {% endfor %}
-      </table>
-      <p><button type="submit">Save</button></p>
-    </form>
-  </body>
-</html>
+{% extends "admin/base.html" %}
+
+{% block content %}
+<div class="container">
+  <div class="row">
+    <div class="col-md-12">
+      <h1>Docker Manager Configuration</h1>
+
+      <form method="post">
+
+        <table class="table table-striped">
+          {% for attr, val in values.items() %}
+          <tr>
+            <td><strong>{{ attr }}</strong></td>
+            <td>
+              <input
+                type="text"
+                name="{{ keyfn(attr) }}"
+                value="{{ val }}"
+                class="form-control"
+              />
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+
+        <button type="button" onclick="saveConfig()" class="btn btn-primary">Save</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function saveConfig() {
+  const data = {};
+
+  document.querySelectorAll("input").forEach(input => {
+    data[input.name] = input.value;
+  });
+
+  fetch("{{ url_for('admin_docker_manager.save_config') }}", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "CSRF-Token": "{{ Session.nonce }}"
+    },
+    body: JSON.stringify(data)
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.success) {
+      location.reload();
+    }
+  });
+}
+</script>
+{% endblock %}

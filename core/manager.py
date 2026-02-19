@@ -11,6 +11,7 @@ from .ssh import SSHPool
 from .config import RuntimeConfig
 from .ports import PortsManager
 from .timer import RunnableTimer
+from ..models.node import Node
 from docker.models.containers import Container
 from typing import Iterable, List, Optional
 from colorama import Fore, Style, init
@@ -31,6 +32,7 @@ class DockerManager:
         
         :param base_urls: Iterable of remote SSH Docker hosts (e.g. ["user@host1", "user@host2"])
         """
+        self.nodes: list[Node] = []
         self.clients: list[DockerClient] = []
         self.client_hosts: list[str] = []
         self.client_users: dict[str, str] = {} # host -> user
@@ -38,23 +40,23 @@ class DockerManager:
         if base_urls:
             for url in base_urls:
                 host = url.split("@")[-1]
-                self.client_hosts.append(host)
-                self.client_users[host] = url.split("@")[0]   
+                name = url.split("@")[0]
+                self.nodes.append(Node(name, host))
         else:
-            self.clients.append(docker.from_env())
-            self.client_hosts.append("localhost")
+            self.nodes.append(Node("localhost", "localhost", client=DockerClient.from_env()))
 
-        self.ssh_pool = SSHPool(user_overrides=self.client_users)
-        
+        self.ssh_pool = SSHPool(nodes=self.nodes)
+
         if base_urls:
-            for url in base_urls:
-                self.clients.append(DockerClient(base_url=f"ssh://{url}"))
+            for node in self.nodes:
+                if node.client is None:
+                    node.client = DockerClient(base_url=f"ssh://{node.name}@{node.address}")
 
         self.ports_manager = PortsManager()
         self.timer_timeout = RunnableTimer()
         self.timer_kill = RunnableTimer()
 
-        self._client_index = 0 #Round Robin Scheduling
+        self._node_index = 0 #Round Robin Scheduling
 
 
 
@@ -101,13 +103,12 @@ class DockerManager:
 
         print("\n----------------")
         token = f"{secrets.randbits(48):08x}"
-        client = self._next_client()
-        server_url = self._client_host(client)
-        host_port = self.ports_manager.allocate_port(token, server_url)
+        node = self._next_node()
+        host_port = self.ports_manager.allocate_port(token, node.address)
 
-        print(Fore.LIGHTMAGENTA_EX + f"{image}{Fore.RESET} - {server_url}:{host_port}")
+        print(Fore.LIGHTMAGENTA_EX + f"{image}{Fore.RESET} - {node.address}:{host_port}")
         
-        client.containers.run(
+        node.client.containers.run(
             image = image,
             detach = True,
             #network = RuntimeConfig.DOCKER_CONTAINER_NETWORK,
@@ -129,40 +130,32 @@ class DockerManager:
 
     def _query_containers(self, **kwargs) -> List[Container]:
         results: List[Container] = []
-        for client in self.clients:
-            results.extend(client.containers.list(**kwargs))
+        for node in self.nodes:
+            results.extend(node.client.containers.list(**kwargs))
         return results
     
 
 
-    def _next_client(self) -> DockerClient:
+    def _next_node(self) -> Node:
 #        """
 #        Choose the Docker client with the most free RAM using.
 #        """
-#        return  max(self.clients, key=self.node_free_mem)
         """
         Round-robin across nodes, but skip nodes without enough free RAM.
         """
         required_mem = RuntimeConfig.MAX_SPARE_RAM
-        num_clients = len(self.clients)
+        num_nodes = len(self.nodes)
 
-        for _ in range(num_clients):
-            client = self.clients[self._client_index]
-            self._client_index = (self._client_index + 1) % num_clients
+        for _ in range(num_nodes):
+            node = self.nodes[self._node_index]
+            self._node_index = (self._node_index + 1) % num_nodes
 
-            free_mem = self.node_free_mem(client)
+            free_mem = self.node_free_mem(node)
 
             if free_mem >= required_mem:
-                return client
+                return node
 
         raise Exception("No node has enough available memory")
-
-    
-
-
-    def _client_host(self, client: DockerClient) -> str:
-        id = self.clients.index(client)
-        return self.client_hosts[id]
 
 
 
@@ -260,17 +253,16 @@ class DockerManager:
 
 
 
-    def node_free_mem(self, client):
-        host = self._client_host(client)
+    def node_free_mem(self, node: Node):
 
-        if host == "localhost":
+        if node.address == "localhost":
             with open("/proc/meminfo") as f:
                 for line in f:
                     if "MemAvailable" in line:
                         kb = int(line.split()[1])
                         return kb * 1024
 
-        ssh = self.ssh_pool.get(host)
+        ssh = self.ssh_pool.get(node)
 
         stdin, stdout, stderr = ssh.exec_command(
             "grep MemAvailable /proc/meminfo"
@@ -286,11 +278,11 @@ class DockerManager:
         """
         Saves a local Docker image and loads it on all remote nodes via SSH.
         """
-        for host in self.client_hosts:
-            print(f"Syncing {Fore.LIGHTMAGENTA_EX}{image}{Fore.RESET} → {host}")
+        for node in self.nodes:
+            print(f"Syncing {Fore.LIGHTMAGENTA_EX}{image}{Fore.RESET} → {node.address}")
 
             subprocess.run(
-                f"docker save {image} | ssh {host} docker load",
+                f"docker save {image} | ssh {node.address} docker load",
                 shell=True,
                 check=True,
                 stdout=subprocess.DEVNULL,
@@ -307,40 +299,40 @@ class DockerManager:
         image = self._get_image_from_tar(tar_path)
         tar_name = os.path.basename(tar_path)
 
-        def sync_host(host: str):
+        def sync_host(node):
             try:
-                check_cmd = f"ssh {host} docker image inspect {image}"
+                check_cmd = f"ssh {node.name}@{node.address} docker image inspect {image}"
                 result = subprocess.run(check_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
                 if result.returncode == 0:
                     print(
-                        f"{host:20} → "
+                        f"{node.address:20} → "
                         f"{Fore.LIGHTGREEN_EX}ALREADY PRESENT{Fore.RESET}"
                     )
                     return True
 
                 print(
-                    f"Syncing {Fore.LIGHTMAGENTA_EX}{tar_name}{Fore.RESET} → {host}"
+                    f"Syncing {Fore.LIGHTMAGENTA_EX}{tar_name}{Fore.RESET} → {node.address}"
                 )
 
                 subprocess.run(
-                    f"cat {tar_path} | ssh {host} docker load",
+                    f"cat {tar_path} | ssh {node.name}@{node.address} docker load",
                     shell=True,
                     check=True,
                     stdout=subprocess.DEVNULL,
                 )
 
-                print(f"{host:20} → {Fore.LIGHTGREEN_EX}LOADED{Fore.RESET}")
+                print(f"{node.address:20} → {Fore.LIGHTGREEN_EX}LOADED{Fore.RESET}")
                 return True
 
             except subprocess.CalledProcessError:
-                print(f"{host:20} → {Fore.LIGHTRED_EX}FAILED{Fore.RESET}")
+                print(f"{node.address:20} → {Fore.LIGHTRED_EX}FAILED{Fore.RESET}")
                 return False
 
         print(f"\nChecking image: {Fore.LIGHTMAGENTA_EX}{image}{Fore.RESET}\n")
 
-        with ThreadPoolExecutor(max_workers=len(self.client_hosts)) as executor:
-            futures = [executor.submit(sync_host, host) for host in self.client_hosts]
+        with ThreadPoolExecutor(max_workers=len(self.nodes)) as executor:
+            futures = [executor.submit(sync_host, node) for node in self.nodes]
             results = [future.result() for future in as_completed(futures)]
 
         if all(results):
@@ -383,16 +375,16 @@ class DockerManager:
         total_running = 0
         total_exited = 0
 
-        for client in self.clients:
-            info = client.info()
+        for node in self.nodes:
+            info = node.client.info()
             mem_total = int(info.get("MemTotal", 0))
-            containers = client.containers.list(
+            containers = node.client.containers.list(
                 all=True,
                 filters={"label": [f"{DockerLabels.CTFD}=true"]},
             )
             running_count = sum(1 for c in containers if c.status == "running")
             exited_count = sum(1 for c in containers if c.status != "running")
-            free_mem = self.node_free_mem(client)
+            free_mem = self.node_free_mem(node)
             used_mem = mem_total - free_mem
 
             # Accumulate totals
@@ -402,8 +394,7 @@ class DockerManager:
             total_running += running_count
             total_exited += exited_count
 
-            node_name = self._client_host(client)
-            print(f"{node_name:20} | "
+            print(f"{node.address:20} | "
                 f"{mem_total // (1024**2):7} MB | "
                 f"{used_mem // (1024**2):6} MB | "
                 f"{free_mem // (1024**2):6} MB | "

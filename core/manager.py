@@ -1,7 +1,6 @@
 import json
 import subprocess
 import tarfile
-import time
 #import uuid
 import secrets
 import docker
@@ -33,9 +32,6 @@ class DockerManager:
         :param base_urls: Iterable of remote SSH Docker hosts (e.g. ["user@host1", "user@host2"])
         """
         self.nodes: list[Node] = []
-        self.clients: list[DockerClient] = []
-        self.client_hosts: list[str] = []
-        self.client_users: dict[str, str] = {} # host -> user
 
         if base_urls:
             for url in base_urls:
@@ -219,7 +215,7 @@ class DockerManager:
     def delete_all(self) -> int:
         """
         Removes ALL containers managed by this system (DockerLabels.CTFD=true)
-        across all clients and releases their allocated ports.
+        across all nodes and releases their allocated ports.
 
         :return: number of containers removed
         """
@@ -358,7 +354,7 @@ class DockerManager:
 
     def print_nodes_table(self):
         """
-        Prints a one-line table overview of all Docker clients: RAM and container counts,
+        Prints a one-line table overview of all Docker nodes: RAM and container counts,
         including a TOTAL summary row.
         """
 

@@ -4,35 +4,43 @@
 <div class="container">
   <div class="row">
     <div class="col-md-12">
-      <h1>Docker Manager Configuration</h1>
+      <br>
+      <h1>Docker Manager</h1>
 
       <form id="docker-config-form" onsubmit="return false;">
-        <table class="table table-striped">
-          <tbody>
-            <tr>
-  <td><strong>Worker Nodes</strong></td>
-  <td>
-    <div id="worker-nodes-list">
-      {% if values.WORKER_NODES %}
-        {% for node in values.WORKER_NODES %}
-        <div class="input-group mb-1 worker-node-entry">
-          <input type="text" class="form-control worker-node-input" value="{{ node }}" placeholder="user@host">
-          <button type="button" class="btn btn-danger remove-node-btn">X</button>
-        </div>
-        {% endfor %}
-      {% else %}
-        <div class="input-group mb-1 worker-node-entry">
-          <input type="text" class="form-control worker-node-input" placeholder="user@host">
-          <button type="button" class="btn btn-danger remove-node-btn">X</button>
-        </div>
-      {% endif %}
-    </div>
-    <button type="button" id="add-node-btn" class="btn btn-secondary mt-1">+ Add Node</button>
-    <small class="form-text text-muted">
-      Define the Docker worker nodes. Click + to add a new node. Format: <code>user@host</code>.
-    </small>
-  </td>
-</tr>
+        <!-- Worker Nodes Section -->
+<div class="mb-3">
+  <hr>
+  <strong>Worker Nodes</strong>
+  <div id="worker-nodes-list" class="mb-1">
+    {% if values.WORKER_NODES %}
+      {% for node in values.WORKER_NODES %}
+      <div class="input-group mb-1 worker-node-entry" style="max-width: 50%;">
+        <input type="text" class="form-control worker-node-input" value="{{ node }}" placeholder="user@host">
+        <button type="button" class="btn btn-danger remove-node-btn">X</button>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="input-group mb-1 worker-node-entry" style="max-width: 50%;">
+        <input type="text" class="form-control worker-node-input" placeholder="user@host">
+        <button type="button" class="btn btn-danger remove-node-btn">X</button>
+      </div>
+    {% endif %}
+  </div>
+
+  <button type="button" id="add-node-btn" class="btn btn-secondary btn-sm mb-1">+ Add Node</button>
+  <button id="save-btn" type="button" onclick="saveConfig()" class="btn btn-primary btn-sm mb-1">Save</button>
+  <small class="form-text text-muted">
+    Define the Docker worker nodes used by the Docker Manager. Each node should be specified in the format <code>user@host</code>. 
+    These nodes are where challenge containers will be deployed and must be reachable via SSH from the CTFd server. 
+    Click the <strong>+ Add Node</strong> button to add a new node
+  </small>
+</div>
+      <br>
+      <h2>Configuration</h2>
+      <hr>
+<table class="table table-striped">
+  <tbody>
 
   <tr>
     <td><strong>Max Active Containers Per Group</strong></td>

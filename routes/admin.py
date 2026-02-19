@@ -1,4 +1,6 @@
+from pathlib import Path
 from flask import Blueprint, render_template, request, redirect, url_for
+import paramiko
 from CTFd.utils import get_config
 from CTFd.utils.decorators import admins_only
 
@@ -34,6 +36,12 @@ def docker_manager_admin():
 def save_config():
     data = request.get_json()
     save_runtime_config(data)
+
+    manager = DockerManager(RuntimeConfig.WORKER_NODES)
+    manager.delete_all()
+    manager.create_container("test1_nginx", "test1_nginx", "nginx")
+    manager.create_container("test1_nginx", "test1_nginx", "nginx")
+    manager.print_nodes_table()
     return {"success": True}
 
 

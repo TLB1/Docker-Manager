@@ -7,6 +7,7 @@ import secrets
 import docker
 from docker import DockerClient
 from .labels import DockerLabels
+from .ssh import SSHPool
 from .config import RuntimeConfig
 from .ports import PortsManager
 from .timer import RunnableTimer
@@ -14,6 +15,8 @@ from docker.models.containers import Container
 from typing import Iterable, List, Optional
 from colorama import Fore, Style, init
 import os
+import gevent.threading
+gevent.threading._ForkHooks.after_fork_in_child = lambda *a, **k: None
 from concurrent.futures import ThreadPoolExecutor, as_completed
 init(autoreset=True)  # resets color automatically
 
@@ -30,20 +33,27 @@ class DockerManager:
         """
         self.clients: list[DockerClient] = []
         self.client_hosts: list[str] = []
+        self.client_users: dict[str, str] = {} # host -> user
 
         if base_urls:
             for url in base_urls:
-                self.clients.append(DockerClient(base_url=f"ssh://{url}"))
-                # store host separately
-                host = url.split("@")[-1]  # extract host from user@host
+                host = url.split("@")[-1]
                 self.client_hosts.append(host)
+                self.client_users[host] = url.split("@")[0]   
         else:
             self.clients.append(docker.from_env())
             self.client_hosts.append("localhost")
 
+        self.ssh_pool = SSHPool(user_overrides=self.client_users)
+        
+        if base_urls:
+            for url in base_urls:
+                self.clients.append(DockerClient(base_url=f"ssh://{url}"))
+
         self.ports_manager = PortsManager()
         self.timer_timeout = RunnableTimer()
         self.timer_kill = RunnableTimer()
+
         self._client_index = 0 #Round Robin Scheduling
 
 
@@ -253,18 +263,20 @@ class DockerManager:
     def node_free_mem(self, client):
         host = self._client_host(client)
 
-        result = subprocess.check_output(
-            [
-                "ssh",
-                "-o", "ControlMaster=auto",
-                "-o", "ControlPath=/tmp/ssh_mux_%h_%p_%r",
-                "-o", "ControlPersist=120",
-                host,
-                "grep MemAvailable /proc/meminfo",
-            ],
-            text=True,
+        if host == "localhost":
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if "MemAvailable" in line:
+                        kb = int(line.split()[1])
+                        return kb * 1024
+
+        ssh = self.ssh_pool.get(host)
+
+        stdin, stdout, stderr = ssh.exec_command(
+            "grep MemAvailable /proc/meminfo"
         )
 
+        result = stdout.read().decode()
         kb = int(result.split()[1])
         return kb * 1024
 

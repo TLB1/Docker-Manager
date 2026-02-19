@@ -3,22 +3,25 @@ import subprocess
 import tarfile
 #import uuid
 import secrets
+import threading
 import docker
 from docker import DockerClient
+from docker.models.containers import Container
+
+from tests.constants import time
+
 from .labels import DockerLabels
 from .ssh import SSHPool
 from .config import RuntimeConfig
 from .ports import PortsManager
 from .timer import RunnableTimer
 from ..models.node import Node
-from docker.models.containers import Container
+from ..models.container import ContainerDetails
+
 from typing import Iterable, List, Optional
-from colorama import Fore, Style, init
 import os
 import gevent.threading
-gevent.threading._ForkHooks.after_fork_in_child = lambda *a, **k: None
 from concurrent.futures import ThreadPoolExecutor, as_completed
-init(autoreset=True)  # resets color automatically
 
 
 class DockerManager:
@@ -102,7 +105,7 @@ class DockerManager:
         node = self._next_node()
         host_port = self.ports_manager.allocate_port(token, node.address)
 
-        print(Fore.LIGHTMAGENTA_EX + f"{image}{Fore.RESET} - {node.address}:{host_port}")
+        print(f"{image} - {node.address}:{host_port}")
         
         node.client.containers.run(
             image = image,
@@ -275,7 +278,7 @@ class DockerManager:
         Saves a local Docker image and loads it on all remote nodes via SSH.
         """
         for node in self.nodes:
-            print(f"Syncing {Fore.LIGHTMAGENTA_EX}{image}{Fore.RESET} → {node.address}")
+            print(f"Syncing {image} → {node.address}")
 
             subprocess.run(
                 f"docker save {image} | ssh {node.address} docker load",
@@ -283,7 +286,7 @@ class DockerManager:
                 check=True,
                 stdout=subprocess.DEVNULL,
             )
-        print(f"{Fore.LIGHTMAGENTA_EX}{image}{Fore.LIGHTGREEN_EX} synced to all nodes.")
+        print(f"{image} synced to all nodes.")
 
 
 
@@ -303,12 +306,12 @@ class DockerManager:
                 if result.returncode == 0:
                     print(
                         f"{node.address:20} → "
-                        f"{Fore.LIGHTGREEN_EX}ALREADY PRESENT{Fore.RESET}"
+                        f"ALREADY PRESENT"
                     )
                     return True
 
                 print(
-                    f"Syncing {Fore.LIGHTMAGENTA_EX}{tar_name}{Fore.RESET} → {node.address}"
+                    f"Syncing {tar_name} → {node.address}"
                 )
 
                 subprocess.run(
@@ -318,14 +321,14 @@ class DockerManager:
                     stdout=subprocess.DEVNULL,
                 )
 
-                print(f"{node.address:20} → {Fore.LIGHTGREEN_EX}LOADED{Fore.RESET}")
+                print(f"{node.address:20} → LOADED")
                 return True
 
             except subprocess.CalledProcessError:
-                print(f"{node.address:20} → {Fore.LIGHTRED_EX}FAILED{Fore.RESET}")
+                print(f"{node.address:20} → FAILED")
                 return False
 
-        print(f"\nChecking image: {Fore.LIGHTMAGENTA_EX}{image}{Fore.RESET}\n")
+        print(f"\nChecking image: {image}\n")
 
         with ThreadPoolExecutor(max_workers=len(self.nodes)) as executor:
             futures = [executor.submit(sync_host, node) for node in self.nodes]
@@ -333,13 +336,13 @@ class DockerManager:
 
         if all(results):
             print(
-                f"\n{Fore.LIGHTMAGENTA_EX}{image} "
-                f"{Fore.LIGHTGREEN_EX}synced to all nodes.{Fore.RESET}"
+                f"\n{image} "
+                f"synced to all nodes."
             )
         else:
             print(
-                f"\n{Fore.LIGHTMAGENTA_EX}{image} "
-                f"{Fore.LIGHTRED_EX}sync completed with errors.{Fore.RESET}"
+                f"\n{image} "
+                f"Sync completed with errors."
             )
 
 
@@ -349,8 +352,33 @@ class DockerManager:
         with tarfile.open(tar_path, "r") as tar:
             manifest = json.load(tar.extractfile("manifest.json"))
             return manifest[0]["RepoTags"][0]
-    
 
+
+    
+    def update_nodes_details(self):
+        for node in self.nodes:
+            print(f"Updating stats for {node}...")
+            info = node.client.info()
+            containers = node.client.containers.list(
+                all=True,
+                filters={"label": [f"{DockerLabels.CTFD}=true"]},
+            )
+            self.get_container_by_token
+            for container in containers:
+                node.containers.append(ContainerDetails(
+                    challenge=container.labels.get(DockerLabels.CHALLENGE),
+                    team=container.labels.get(DockerLabels.TEAM),
+                    token=container.labels.get(DockerLabels.TOKEN),
+                    url=f"http://{container.labels.get(DockerLabels.TOKEN)}.challenges.ctf:8008/",
+                    image=container.image,
+                    status=container.status
+                ))
+            
+            node.stats.running_count = sum(1 for c in containers if c.status == "running")
+            node.stats.exited_count = sum(1 for c in containers if c.status != "running")
+            node.stats.mem_total = int(info.get("MemTotal", 0))
+            node.stats.free_mem = self.node_free_mem(node)
+            node.stats.used_mem = node.stats.mem_total - node.stats.free_mem
 
     def print_nodes_table(self):
         """
@@ -412,7 +440,7 @@ class DockerManager:
 if __name__ == "__main__":
     try:
         manager = DockerManager(["user@10.20.100.14", "user@10.20.100.15", "user@10.20.100.35"])
-        print(f"{Fore.LIGHTGREEN_EX}Cleaned up {manager.delete_all()} containers")
+        print(f"Cleaned up {manager.delete_all()} containers")
 
         #manager.sync_image("mysql:oraclelinux9")
         manager.sync_tar_image("images/postgres.tar")

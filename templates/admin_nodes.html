@@ -1,0 +1,80 @@
+{% extends "admin/base.html" %}
+
+{% block content %}
+<div class="container">
+
+  <div class="row mb-4">
+    <div class="col">
+        <br>
+      <h1>Cluster Nodes</h1>
+    </div>
+  </div>
+
+  <div class="row">
+
+    {% for node in nodes %}
+    <div class="col-md-4 mb-4">
+
+      <div class="card h-100 shadow-sm">
+
+        <div class="card-body text-center">
+
+
+
+          <h5>{{ node.address }}</h5>
+
+          <small class="text-muted">
+            {{ node.name }}@{{ node.address }}:{{ node.port }}
+          </small>
+
+          <hr>
+
+          <!-- MEMORY -->
+          <div class="mb-2">
+            {% set total = (node.stats.mem_total / (1024 ** 2)) | int  | default(0) %}
+            {% set used = (node.stats.used_mem / (1024 ** 2)) | int  | default(0) %}
+            {% set percent = ((used / total * 100)) | int  if total > 0 else 0 %}
+
+            <div class="progress" style="height:8px;">
+              <div class="progress-bar" style="width: {{ percent }}%;"></div>
+            </div>
+
+            <small class="text-muted">
+              {{ used }} / {{ total }} MB
+            </small>
+          </div>
+
+        </div>
+
+        <!-- FOOTER -->
+        <div class="card-footer bg-white">
+
+          {% set running = node.stats.running_count | default(0) %}
+          {% set exited = node.stats.exited_count | default(0) %}
+
+          <span
+            style="
+              display:inline-block;
+              width:10px;
+              height:10px;
+              border-radius:50%;
+              background:{% if running > 0 %}#28a745{% else %}#6c757d{% endif %};
+              margin-right:6px;
+            ">
+          </span>
+
+          <small>
+            {{ running }} running · {{ exited }} exited
+          </small>
+
+        </div>
+
+      </div>
+
+    </div>
+    {% endfor %}
+
+  </div>
+
+</div>
+{% endblock %}

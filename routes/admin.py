@@ -1,6 +1,5 @@
-from pathlib import Path
-from flask import Blueprint, render_template, request, redirect, url_for
-import paramiko
+
+from flask import Blueprint, render_template, request, current_app, redirect, url_for
 from CTFd.utils import get_config
 from CTFd.utils.decorators import admins_only
 
@@ -37,12 +36,25 @@ def save_config():
     data = request.get_json()
     save_runtime_config(data)
 
-    manager = DockerManager(RuntimeConfig.WORKER_NODES)
-    manager.delete_all()
-    manager.create_container("test1_nginx", "test1_nginx", "nginx")
-    manager.create_container("test1_nginx", "test1_nginx", "nginx")
-    manager.print_nodes_table()
+    dm = DockerManager(RuntimeConfig.WORKER_NODES)
+    current_app.docker_manager = dm
+
+    dm.delete_all()
+    dm.create_container("test1_nginx", "test1_nginx", "nginx")
+    dm.create_container("test1_nginx", "test1_nginx", "nginx")
+    dm.print_nodes_table()
+
     return {"success": True}
+
+
+
+@admin_docker.route("/admin/docker_manager/nodes")
+@admins_only
+def nodes_dashboard():
+    dm = current_app.docker_manager
+    dm.update_nodes_details()
+    return render_template("admin_nodes.html", nodes=dm.nodes)
+
 
 
 
@@ -50,13 +62,16 @@ def load(app):
     app.register_blueprint(admin_docker)
     load_runtime_config()
 
+    app.docker_manager = DockerManager(RuntimeConfig.WORKER_NODES)
+
     try:
-        base_urls_raw = get_config("docker_base_urls", default="")
-        base_urls = [u.strip() for u in base_urls_raw.split(",") if u.strip()] if base_urls_raw else None
-        app.docker_manager = DockerManager(base_urls=base_urls)
+        app.docker_manager.delete_all()
+        app.docker_manager.create_container("test1_nginx", "test1_nginx", "nginx")
+        app.docker_manager.create_container("test1_nginx", "test1_nginx", "nginx")
+        app.docker_manager.print_nodes_table()
+        app.docker_manager.update_nodes_details()
     except Exception:
         app.docker_manager = None
-
 
 
 

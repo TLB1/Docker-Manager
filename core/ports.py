@@ -1,11 +1,4 @@
-
-from http import client
-import subprocess
-from zipfile import Path
-
-from colorama import Fore
 import docker
-#from flask import current_app
 from .config import RuntimeConfig
 
 
@@ -33,7 +26,7 @@ class PortsManager:
                 self.allocated_ports[token] = (server_url, port)
                 self.update_nginx_token_map()
 
-                print(Fore.CYAN + f"http://{token}.challenges.ctf:8008/")
+                print(f"http://{token}.challenges.ctf:8008/")
                 return port
 
         raise Exception(f"No free ports available on {server_url}")
@@ -61,15 +54,11 @@ class PortsManager:
 
         config_lines.append("}")
 
-        #plugin_root = Path(current_app.root_path) / "CTFd/plugins/my-plugin"
-        #token_map_path = plugin_root / "nginx" / "token_map.conf"
-
         with open("/opt/CTFd/CTFd/plugins/my-plugin/nginx/data/token_map.conf", "w") as f:
             f.write("\n".join(config_lines))
 
         client = docker.from_env()
         container = client.containers.get("ctfd-nginx-proxy")
         container.exec_run("nginx -s reload")
-        #subprocess.run(["sudo", "/usr/sbin/nginx", "-s", "reload"], stdout=subprocess.DEVNULL)
 
     

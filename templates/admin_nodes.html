@@ -5,76 +5,250 @@
 
   <div class="row mb-4">
     <div class="col">
-        <br>
+      <br>
       <h1>Cluster Nodes</h1>
     </div>
   </div>
 
   <div class="row">
-
+    {# Node cards (compact) #}
     {% for node in nodes %}
     <div class="col-md-4 mb-4">
-
       <div class="card h-100 shadow-sm">
-
         <div class="card-body text-center">
+          <h5 class="mb-0">{{ node.address }}</h5>
+          <small class="text-muted">{{ node.name }}@{{ node.address }}:{{ node.port }}</small>
 
+          <hr class="my-3">
 
+          {% set total = (node.stats.mem_total / (1024 ** 2)) | int | default(0) %}
+          {% set used = (node.stats.used_mem / (1024 ** 2)) | int | default(0) %}
+          {% set percent = ((used / total * 100)) | int if total > 0 else 0 %}
 
-          <h5>{{ node.address }}</h5>
-
-          <small class="text-muted">
-            {{ node.name }}@{{ node.address }}:{{ node.port }}
-          </small>
-
-          <hr>
-
-          <!-- MEMORY -->
-          <div class="mb-2">
-            {% set total = (node.stats.mem_total / (1024 ** 2)) | int  | default(0) %}
-            {% set used = (node.stats.used_mem / (1024 ** 2)) | int  | default(0) %}
-            {% set percent = ((used / total * 100)) | int  if total > 0 else 0 %}
-
+          <div class="mb-3">
             <div class="progress" style="height:8px;">
-              <div class="progress-bar" style="width: {{ percent }}%;"></div>
+              <div class="progress-bar" role="progressbar" style="width: {{ percent }}%;" aria-valuenow="{{ percent }}" aria-valuemin="0" aria-valuemax="100"></div>
             </div>
-
-            <small class="text-muted">
-              {{ used }} / {{ total }} MB
-            </small>
+            <small class="text-muted d-block mt-1">{{ used }} / {{ total }} MB</small>
           </div>
 
         </div>
 
-        <!-- FOOTER -->
         <div class="card-footer bg-white">
-
           {% set running = node.stats.running_count | default(0) %}
           {% set exited = node.stats.exited_count | default(0) %}
-
-          <span
-            style="
-              display:inline-block;
-              width:10px;
-              height:10px;
-              border-radius:50%;
-              background:{% if running > 0 %}#28a745{% else %}#6c757d{% endif %};
-              margin-right:6px;
-            ">
-          </span>
-
-          <small>
-            {{ running }} running · {{ exited }} exited
-          </small>
-
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{% if running > 0 %}#28a745{% else %}#6c757d{% endif %};margin-right:8px;"></span>
+          <small class="text-muted">{{ running }} running · {{ exited }} exited</small>
         </div>
-
       </div>
-
     </div>
     {% endfor %}
-
   </div>
 
+  <hr class="my-4">
+
+  {# Separate, full-width containers overview #}
+  <div class="row d-flex align-items-center justify-content-between mb-3 px-3">
+  <h2 class="mb-0">Containers Overview</h2>
+
+  <div class="d-flex align-items-center gap-2">
+  <label class="small text-muted mb-0 px-2">Search</label>
+  <input id="containerSearch"
+         type="text"  
+         class="form-control form-control-sm shadow-sm border-0"
+         style="width:180px; background-color: #e9e9ed;"
+         placeholder="Search...">
+    <label class="small text-muted mb-0 px-2">Sort by</label>
+
+    <select id="containerSort"
+            class="form-select form-select-sm shadow-sm border-0"
+            style="width:180px; height: 31px;">
+      <option value="running">Running</option>
+      <option value="node">Node</option>
+      <option value="challenge">Challenge</option>
+    </select>
 </div>
+</div>
+      <small class="text-muted d-block mb-2">All containers across nodes</small>
+      <div id="containersList">
+      {% for node in nodes %}
+        {% for c in node.containers %}
+        <div class="card mb-2 shadow-sm container-card" 
+          data-status="{{ c.status }}"
+          data-team="{{ c.team }}"
+          data-image="{{ c.image }}"
+          data-node="{{ node.address }}"
+          data-challenge="{{ c.challenge | lower }}"
+          style="width:100%;">
+          <div class="card-body p-3">
+            <div class="d-flex align-items-center justify-content-between">
+              <div class="d-flex align-items-center" style="gap:12px; width:100%;">
+                {# Status dot #}
+                <span style="display:inline-block;width:12px;height:12px;border-radius:50%;
+                             background:{% if c.status == 'running' %}#28a745{% else %}#6c757d{% endif %};
+                             flex:0 0 12px;"></span>
+
+                {# Main info (stacked) #}
+                <div style="flex:1;">
+                  <div class="d-flex flex-wrap align-items-center justify-content-between">
+                    <div>
+                      <strong>{{ c.challenge }}</strong>
+                      <div class="small text-muted">Team: {{ c.team }} &middot; Node: {{ node.address }}</div>
+                    </div>
+
+                    {# Small gray "image" text #}
+                    <div class="text-muted small" style="flex:0 0 auto; margin-right:16px;">{{ c.image }}</div>
+                  </div>
+                </div>
+              </div>
+
+              {# Go button #}
+              <div class="ms-3" style="flex:0 0 auto;">
+        
+                <button class="btn btn-sm btn-outline-danger"
+                  type="button"
+                  onclick="deleteContainer('{{ c.token }}', this)">
+                  ✕
+                </button>
+        
+                {% if c.status == "running" %}
+                <button
+                  type="button"
+                  class="btn btn-sm btn-outline-warning"
+                  onclick="suspendContainer('{{ c.token }}', this)">
+                  ❚❚
+                </button>
+                {% else %}
+                <button
+                  type="button"
+                  class="btn btn-sm btn-outline-success"
+                  onclick="resumeContainer('{{ c.token }}', this)">
+                  ▶
+                </button>
+                {% endif %}
+
+                {% if c.url and c.status == 'running' %}
+                <a href="{{ c.url }}" target="_blank" class="btn btn-sm btn-primary">Go</a>
+                {% else %}
+                <button class="btn btn-sm btn-secondary" disabled>Go</button>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      {% endfor %}
+      </div>
+      {# Fallback if no containers at all #}
+      {% set any_containers = nodes | map(attribute='containers') | sum(start=[]) %}
+      {% if any_containers | length == 0 %}
+        <div class="text-muted">No containers available.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+async function deleteContainer(token, btn) {
+  if (!confirm("Delete this container? This cannot be undone.")) return;
+
+  const resp = await fetch("/admin/container/delete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "CSRF-Token": "{{ Session.nonce }}"
+    },
+    body: JSON.stringify({ token })
+  });
+
+  if (resp.ok) {
+    // remove container row nicely
+    const card = btn.closest(".card");
+    if (card) card.remove();
+  } else {
+    alert("Failed to delete container");
+  }
+}
+async function suspendContainer(token, btn) {
+  if (!confirm("Suspend this container?")) return;
+
+  const resp = await fetch("{{ url_for('admin_docker_manager.suspend_container') }}", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      "CSRF-Token": "{{ Session.nonce }}"
+    },
+    body: JSON.stringify({ token })
+  });
+
+  if (resp.ok) btn.closest(".card").style.opacity = 0.5;
+  else alert("Suspend failed");
+}
+
+async function resumeContainer(token, btn) {
+  const resp = await fetch("{{ url_for('admin_docker_manager.resume_container') }}", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      "CSRF-Token": "{{ Session.nonce }}"
+    },
+    body: JSON.stringify({ token })
+  });
+
+  if (resp.ok) btn.closest(".card").style.opacity = 0.5;
+  else alert("Resume failed");
+}
+
+const sortSelect = document.getElementById("containerSort");
+const searchInput = document.getElementById("containerSearch");
+const list = document.getElementById("containersList");
+
+function updateList() {
+  const cards = Array.from(list.querySelectorAll(".container-card"));
+  const mode = sortSelect.value;
+  const search = searchInput.value.trim().toLowerCase();
+
+  // Sort
+  cards.sort((a, b) => {
+    if (mode === "running") {
+      return (b.dataset.status === "running") - (a.dataset.status === "running");
+    }
+    if (mode === "node") {
+      return a.dataset.node.localeCompare(b.dataset.node);
+    }
+    if (mode === "challenge") {
+      return a.dataset.challenge.localeCompare(b.dataset.challenge);
+    }
+  });
+
+  // Filter
+  cards.forEach(c => {
+    const team = c.dataset.team.toLowerCase();
+  const challenge = c.dataset.challenge.toLowerCase();
+  const image = c.dataset.image.toLowerCase();
+  const searchLower = search.toLowerCase();
+
+  if (
+    searchLower === "" ||
+    team.includes(searchLower) ||
+    challenge.includes(searchLower) ||
+    image.includes(searchLower)
+  ) {
+    c.style.display = ""; // show
+  } else {
+    c.style.display = "none"; // hide
+  }
+
+  list.appendChild(c);
+});
+}
+// Event listeners
+sortSelect.addEventListener("change", updateList);
+searchInput.addEventListener("input", updateList);
+
+// Trigger on page load
+document.addEventListener("DOMContentLoaded", updateList);
+</script>
 {% endblock %}

@@ -357,13 +357,13 @@ class DockerManager:
     
     def update_nodes_details(self):
         for node in self.nodes:
+            node.containers = []
             print(f"Updating stats for {node}...")
             info = node.client.info()
             containers = node.client.containers.list(
                 all=True,
                 filters={"label": [f"{DockerLabels.CTFD}=true"]},
             )
-            self.get_container_by_token
             for container in containers:
                 node.containers.append(ContainerDetails(
                     challenge=container.labels.get(DockerLabels.CHALLENGE),
@@ -373,7 +373,7 @@ class DockerManager:
                     image=container.image,
                     status=container.status
                 ))
-            
+
             node.stats.running_count = sum(1 for c in containers if c.status == "running")
             node.stats.exited_count = sum(1 for c in containers if c.status != "running")
             node.stats.mem_total = int(info.get("MemTotal", 0))

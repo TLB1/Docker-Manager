@@ -276,7 +276,7 @@ data['docker_worker_nodes'] = workerNodes;
 
 
 
-    // POST to backend API (must exist)
+
     const resp = await fetch("{{ url_for('admin_docker_manager.save_config') }}", {
       method: "POST",
       headers: {

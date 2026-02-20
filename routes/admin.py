@@ -1,5 +1,5 @@
 
-from flask import Blueprint, render_template, request, current_app, redirect, url_for
+from flask import Blueprint, abort, render_template, request, current_app, redirect, url_for
 from CTFd.utils import get_config
 from CTFd.utils.decorators import admins_only
 
@@ -53,8 +53,43 @@ def save_config():
 def nodes_dashboard():
     dm = current_app.docker_manager
     dm.update_nodes_details()
+    for node in dm.nodes:
+        print(f"Node: {node.name} ({node.address}) - Status: {node.status}")
+        for c in node.containers:
+            print(f"  Container: {c.challenge} ({c.team}) - Status: {c.status}")
     return render_template("admin_nodes.html", nodes=dm.nodes)
 
+
+
+
+@admin_docker.route("/admin/container/delete", methods=["POST"])
+@admins_only
+def delete_container():
+    token = request.get_json().get("token")
+
+    if not token:
+        abort(400)
+
+    current_app.docker_manager.remove_container(token)
+
+    return redirect(url_for("admin_docker_manager.nodes_dashboard")) 
+
+
+
+@admins_only
+@admin_docker.route("/admin/container/suspend", methods=["POST"])
+def suspend_container():
+    token = request.get_json().get("token")
+    current_app.docker_manager.suspend_container(token)
+    return {"success": True}
+
+
+@admins_only
+@admin_docker.route("/admin/container/resume", methods=["POST"])
+def resume_container():
+    token = request.get_json().get("token")
+    current_app.docker_manager.resume_container(token)
+    return {"success": True}
 
 
 
@@ -66,8 +101,11 @@ def load(app):
 
     try:
         app.docker_manager.delete_all()
-        app.docker_manager.create_container("test1_nginx", "test1_nginx", "nginx")
-        app.docker_manager.create_container("test1_nginx", "test1_nginx", "nginx")
+        app.docker_manager.create_container("team-nginx", "nginx-challenge", "nginx")
+        app.docker_manager.create_container("team-nginx", "nginx-challenge", "nginx")
+        app.docker_manager.create_container("team-httpd", "httpd-challenge", "httpd:trixie")
+        app.docker_manager.create_container("team-httpd", "httpd-challenge", "httpd:trixie")
+        app.docker_manager.create_container("team-hello-world", "hello-world-challenge", "hello-world:latest")
         app.docker_manager.print_nodes_table()
         app.docker_manager.update_nodes_details()
     except Exception:

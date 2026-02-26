@@ -41,7 +41,47 @@
       <hr>
 <table class="table table-striped">
   <tbody>
+<tr>
+  <td><strong>Registry URL</strong></td>
+  <td>
+    <input type="text" name="docker_registry_url"
+           value="{{ values.REGISTRY_URL }}"
+           class="form-control">
+    <small class="form-text text-muted">
+      Docker registry endpoint (e.g. ghcr.io, registry.hackthebox.com).
+    </small>
+  </td>
+</tr>
 
+<tr>
+  <td><strong>Registry Username</strong></td>
+  <td>
+    <input type="text" name="docker_registry_user"
+           value="{{ values.REGISTRY_USER }}"
+           class="form-control">
+  </td>
+</tr>
+
+<tr>
+  <td><strong>Registry Password</strong></td>
+  <td>
+    <input type="password" name="docker_registry_password"
+           value="{{ values.REGISTRY_PASSWORD }}"
+           class="form-control">
+  </td>
+</tr>
+
+<tr>
+  <td><strong>Registry Namespace</strong></td>
+  <td>
+    <input type="text" name="docker_registry_namespace"
+           value="{{ values.REGISTRY_NAMESPACE }}"
+           class="form-control">
+    <small class="form-text text-muted">
+      Default image namespace (e.g. teamname, ctfd, challenges).
+    </small>
+  </td>
+</tr>
   <tr>
     <td><strong>Max Active Containers Per Group</strong></td>
     <td>

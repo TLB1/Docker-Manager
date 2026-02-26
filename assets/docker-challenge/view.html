@@ -1,0 +1,11 @@
+{% extends "challenge.html" %}
+
+{% block description %}
+  {{ challenge.html }}
+  <small>This is adding content to the challenge view.</small>
+  {% if challenge.extra and challenge.extra.docker_image %}
+    <div class="alert alert-info mt-2">
+      This challenge is backed by a Docker image (admin-only). Image: {{ challenge.extra.docker_image }}
+    </div>
+  {% endif %}
+{% endblock %}

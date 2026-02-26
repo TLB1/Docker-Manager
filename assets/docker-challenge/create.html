@@ -1,0 +1,66 @@
+{% extends "admin/challenges/create.html" %}
+
+{% block name %}
+<div class="form-group">
+		<label>
+			Name:<br>
+			<small class="form-text text-muted">
+				The name of your challenge
+			</small>
+		</label>
+		<input type="text" class="form-control" name="name" placeholder="Enter challenge name">
+	</div>
+<div class="form-group">
+    <hr>
+    <div class="mb-3">
+      <label class="form-label">Upload Docker image: (.tar)</label>
+      <small class="form-text text-muted">Upload the exported docker image as a .tar file</small>
+      <input type="file" class="form-control" id="image-tar-input" accept=".tar">
+    </div> 
+  </div> 
+
+  <input type="hidden" name="docker_image_filename" id="docker_image_filename">
+</div>
+
+<script>
+// Upload file via async request to our plugin endpoint, store returned filename in hidden input
+const input = document.getElementById('image-tar-input');
+const hidden = document.getElementById('docker_image_filename');
+
+input.addEventListener('change', async (ev) => {
+  const file = ev.target.files[0];
+  if(!file) return;
+  if(!file.name.toLowerCase().endsWith('.tar')){
+    alert('Please select a .tar file');
+    input.value = '';
+    return;
+  }
+
+  const form = new FormData();
+  form.append('image_tar', file);
+
+  // Upload to plugin endpoint
+  const resp = await fetch('{{ url_for("docker_image_challenge.upload_docker_image") }}', {
+    method: 'POST',
+    body: form,
+    headers: {
+      // CSRF token header if your CTFd requires it — many do. Adjust accordingly.
+      'X-CSRF-Token': '{{ Session.nonce }}'
+    }
+  });
+
+  const data = await resp.json();
+  if(data.success){
+    hidden.value = data.filename;
+    alert('Image uploaded successfully');
+  } else {
+    alert('Upload failed: ' + (data.error || 'unknown'));
+    input.value = '';
+  }
+});
+</script>
+
+{% endblock %}
+{% block type %}
+<input type="hidden" name="type" value="docker_image" id="chaltype">
+{% endblock %}

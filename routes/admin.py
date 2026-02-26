@@ -1,6 +1,5 @@
 
 from flask import Blueprint, abort, render_template, request, current_app, redirect, url_for
-from CTFd.utils import get_config
 from CTFd.utils.decorators import admins_only
 
 from ..core.manager import DockerManager
@@ -16,7 +15,6 @@ admin_docker = Blueprint(
     template_folder=os.path.join(BASE_DIR, "templates"),
     static_folder=os.path.join(BASE_DIR, "assets"),
 )
-
 
 
 
@@ -101,11 +99,13 @@ def load(app):
 
     try:
         app.docker_manager.delete_all()
-        app.docker_manager.create_container("team-nginx", "nginx-challenge", "nginx")
-        app.docker_manager.create_container("team-nginx", "nginx-challenge", "nginx")
-        app.docker_manager.create_container("team-httpd", "httpd-challenge", "httpd:trixie")
-        app.docker_manager.create_container("team-httpd", "httpd-challenge", "httpd:trixie")
-        app.docker_manager.create_container("team-hello-world", "hello-world-challenge", "hello-world:latest")
+        app.docker_manager.create_container("Web Devs", "Nginx Challenge", "nginx")
+        app.docker_manager.create_container("I love CSS", "Nginx Challenge", "nginx")
+        app.docker_manager.create_container("Web Devs", "httpd Challenge", "httpd:trixie")
+        app.docker_manager.create_container("I love CSS", "httpd Challenge", "httpd:trixie")
+        app.docker_manager.create_container("Programmers", "hello-world Challenge", "hello-world:latest")
+        app.docker_manager.create_container("Programmers", "Nginx Challenge", "nginx")
+        app.docker_manager.create_container("Programmers", "httpd Challenge", "httpd:trixie")
         app.docker_manager.print_nodes_table()
         app.docker_manager.update_nodes_details()
     except Exception:

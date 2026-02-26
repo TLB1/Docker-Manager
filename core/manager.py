@@ -14,6 +14,7 @@ from .labels import DockerLabels
 from .ssh import SSHPool
 from .config import RuntimeConfig
 from .ports import PortsManager
+from .registry import RegistryManager
 from .timer import RunnableTimer
 from ..models.node import Node
 from ..models.container import ContainerDetails
@@ -52,6 +53,7 @@ class DockerManager:
                     node.client = DockerClient(base_url=f"ssh://{node.name}@{node.address}")
 
         self.ports_manager = PortsManager()
+        self.registry = RegistryManager()
         self.timer_timeout = RunnableTimer()
         self.timer_kill = RunnableTimer()
 
@@ -104,6 +106,9 @@ class DockerManager:
         token = f"{secrets.randbits(48):08x}"
         node = self._next_node()
         host_port = self.ports_manager.allocate_port(token, node.address)
+        
+        #image = self.registry.ensure_image_exists(image)
+        #node.client.images.pull(image)
 
         print(f"{image} - {node.address}:{host_port}")
         

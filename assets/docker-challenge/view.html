@@ -1,11 +1,21 @@
 {% extends "challenge.html" %}
-
 {% block description %}
   {{ challenge.html }}
-  <small>This is adding content to the challenge view.</small>
-  {% if challenge.extra and challenge.extra.docker_image %}
-    <div class="alert alert-info mt-2">
-      This challenge is backed by a Docker image (admin-only). Image: {{ challenge.extra.docker_image }}
-    </div>
-  {% endif %}
+  <hr>
+  <div id="docker-controls" class="mt-3" data-challenge-id="{{ challenge.id }}">
+    {% if docker_container_exists %}
+      {% if docker_container_status == "running" %}
+        <a id="docker-go" class="btn btn-success" href="{{ docker_container_url }}" target="_blank">Go to challenge</a>
+      {% elif docker_container_status %}
+        <button id="docker-resume" class="btn btn-warning">Resume container</button>
+        <span class="ml-2 text-muted">Status: {{ docker_container_status }}</span>
+      {% else %}
+        <button id="docker-start" class="btn btn-primary">Start container</button>
+      {% endif %}
+    {% else %}
+      <button id="docker-start" class="btn btn-primary">Start container</button>
+    {% endif %}
+    <span id="docker-msg" class="ml-2"></span>
+  </div>
+  <hr>
 {% endblock %}

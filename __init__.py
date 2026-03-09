@@ -21,7 +21,8 @@ from . import routes
 # this keeps the "public" load/unload at package root (CTFd expects that)
 #try:
 from .routes.admin import load as routes_load, unload as routes_unload
-from .models.challenges import load as challenges_load
+from .routes.challenges import load as challenges_load
+from .routes.docker import load as docker_load
 #except Exception:
     # Keep import-time failure visible but don't crash import
  #   routes_load = None
@@ -37,6 +38,7 @@ def load(app):
     register_plugin_assets_directory(app, base_path='/plugins/my-plugin/assets/')
     challenges_load(app)
     routes_load(app)
+    docker_load(app)
 
 
 

@@ -82,6 +82,15 @@ class DockerManager:
             all=True,
             filters={"label": [f"{DockerLabels.TEAM}={team_id}"]},
         )
+
+
+    
+    def get_container_for_team_challenge(self, team_id: int, challenge_id: int) -> Optional[Container]:
+        containers = self._query_containers(
+            all=True,
+            filters={"label": [f"{DockerLabels.TEAM}={team_id}", f"{DockerLabels.CHALLENGE}={challenge_id}"]},
+        )
+        return containers[0] if containers else None    
     
 
 

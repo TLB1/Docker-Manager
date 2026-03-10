@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y openssh-client
 COPY --chown=1001:1001 ./CTFd/plugins/my-plugin/ssh/ctfd_ssh_keys /home/ctfd/.ssh/
 RUN mkdir -p /.ssh && chown -R 1001:1001 /home/ctfd/.ssh
 RUN chown 1001:1001 ./CTFd/plugins/my-plugin/nginx/token_map.conf
+RUN mkdir /var/images/ && chown 1001:1001 ./CTFd/plugins/my-plugin/nginx/token_map.conf /var/images/
 ```
 Add this to the top of `docker-compose.yml`
 ```yaml

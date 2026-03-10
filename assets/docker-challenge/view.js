@@ -78,21 +78,45 @@
       });
   }
 
-  function docker_start(challenge_id) {
+function docker_start(challenge_id) {
     const $controls = $("#docker-controls");
     $controls.find("#docker-msg").text("Starting container…");
+    $controls.find("#docker-start").prop("disabled", true);
 
     apiPost(`/docker/api/challenge/${challenge_id}/start`, {})
-      .then(function (resp) {
-        if (resp.success) {
-          $controls.find("#docker-msg").text("Started. Refreshing…");
-          setTimeout(() => docker_update_ui(challenge_id), 1500);
-        } else {
-          $controls.find("#docker-msg").text(resp.error || "Failed to start");
-        }
-      })
-      .catch(() => $controls.find("#docker-msg").text("Failed to start"));
-  }
+        .then(function (resp) {
+            if (resp.success) {
+                $controls.find("#docker-msg").text("Started! Waiting for container…");
+                pollUntilRunning(challenge_id, 10); // retry up to 10 times
+            } else {
+                $controls.find("#docker-msg").text(resp.error || "Failed to start");
+                $controls.find("#docker-start").prop("disabled", false);
+            }
+        })
+        .catch(err => {
+            console.error("[docker] start error:", err);
+            $controls.find("#docker-msg").text("Failed to start: " + err.message);
+            $controls.find("#docker-start").prop("disabled", false);
+        });
+}
+
+function pollUntilRunning(challenge_id, attemptsLeft) {
+    if (attemptsLeft <= 0) {
+        $("#docker-controls").find("#docker-msg").text("Container is taking a while — try refreshing.");
+        return;
+    }
+    setTimeout(() => {
+        apiGet(`/docker/api/challenge/${challenge_id}/status`)
+            .then(resp => {
+                if (resp.success && resp.exists && resp.status === "running") {
+                    renderControls($("#docker-controls"), resp);
+                } else {
+                    pollUntilRunning(challenge_id, attemptsLeft - 1);
+                }
+            })
+            .catch(() => pollUntilRunning(challenge_id, attemptsLeft - 1));
+    }, 2000); // check every 2s
+}
 
   function docker_resume(challenge_id) {
     const $controls = $("#docker-controls");
@@ -124,7 +148,7 @@
 
   /* ---------------- Init ---------------- */
 
-  $(function () {
+  $(function () { 
     const challenge_id =
       parseInt($("#challenge-id").val()) ||
       parseInt($("#docker-controls").attr("data-challenge-id"));

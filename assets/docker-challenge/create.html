@@ -1,66 +1,162 @@
 {% extends "admin/challenges/create.html" %}
-
 {% block name %}
 <div class="form-group">
-		<label>
-			Name:<br>
-			<small class="form-text text-muted">
-				The name of your challenge
-			</small>
-		</label>
-		<input type="text" class="form-control" name="name" placeholder="Enter challenge name">
-	</div>
-<div class="form-group">
-    <hr>
-    <div class="mb-3">
-      <label class="form-label">Upload Docker image: (.tar)</label>
-      <small class="form-text text-muted">Upload the exported docker image as a .tar file</small>
-      <input type="file" class="form-control" id="image-tar-input" accept=".tar">
-    </div> 
-  </div> 
-
-  <input type="hidden" name="docker_image_filename" id="docker_image_filename">
+  <label>
+    Name:<br>
+    <small class="form-text text-muted">The name of your challenge</small>
+  </label>
+  <input type="text" class="form-control" name="name" placeholder="Enter challenge name">
 </div>
 
-<script>
-// Upload file via async request to our plugin endpoint, store returned filename in hidden input
-const input = document.getElementById('image-tar-input');
-const hidden = document.getElementById('docker_image_filename');
+<div class="form-group">
+  <hr>
+  <label class="form-label">Upload Docker Image <small class="text-muted">(.tar)</small></label>
+  <small class="form-text text-muted d-block mb-2">Select a Docker image exported as a .tar file, then click Upload.</small>
 
-input.addEventListener('change', async (ev) => {
-  const file = ev.target.files[0];
-  if(!file) return;
-  if(!file.name.toLowerCase().endsWith('.tar')){
-    alert('Please select a .tar file');
-    input.value = '';
-    return;
+  <div class="d-flex align-items-center gap-2 mb-2">
+    <input type="file" class="form-control" id="image-tar-input" accept=".tar" style="max-width: 400px;">
+    <button type="button" class="btn btn-secondary" id="upload-btn" disabled>Upload</button>
+  </div>
+
+  <!-- Progress bar (hidden until upload starts) -->
+  <div id="upload-progress-wrap" style="display:none; max-width: 400px;">
+    <div class="progress">
+      <div id="upload-progress-bar"
+           class="progress-bar progress-bar-striped progress-bar-animated"
+           role="progressbar"
+           style="width: 0%">0%</div>
+    </div>
+  </div>
+
+  <div id="upload-status" class="mt-2"></div>
+</div>
+
+<input type="hidden" name="docker_image_filename" id="docker_image_filename">
+
+<script>
+(function () {
+  const input    = document.getElementById('image-tar-input');
+  const btn      = document.getElementById('upload-btn');
+  const hidden   = document.getElementById('docker_image_filename');
+  const status   = document.getElementById('upload-status');
+  const wrap     = document.getElementById('upload-progress-wrap');
+  const bar      = document.getElementById('upload-progress-bar');
+
+  function setStatus(msg, type) {
+    // type: 'success' | 'danger' | 'info'
+    status.innerHTML = `<small class="text-${type}">${msg}</small>`;
   }
 
-  const form = new FormData();
-  form.append('image_tar', file);
+  function setSubmitDisabled(disabled) {
+    document.querySelectorAll('button[type=submit], input[type=submit]')
+      .forEach(el => el.disabled = disabled);
+  }
 
-  // Upload to plugin endpoint
-  const resp = await fetch('{{ url_for("docker_image_challenge.upload_docker_image") }}', {
-    method: 'POST',
-    body: form,
-    headers: {
-      // CSRF token header if your CTFd requires it — many do. Adjust accordingly.
-      'X-CSRF-Token': '{{ Session.nonce }}'
+  function setProgress(pct) {
+    bar.style.width = pct + '%';
+    bar.textContent = pct + '%';
+  }
+
+  // Enable the Upload button only once a file is chosen
+  input.addEventListener('change', () => {
+    const file = input.files[0];
+    if (!file) { btn.disabled = true; return; }
+
+    if (!file.name.toLowerCase().endsWith('.tar')) {
+      setStatus('Please select a .tar file.', 'danger');
+      input.value = '';
+      btn.disabled = true;
+      return;
     }
+
+    // Clear any previous upload state
+    hidden.value = '';
+    status.innerHTML = '';
+    wrap.style.display = 'none';
+    setProgress(0);
+    btn.disabled = false;
   });
 
-  const data = await resp.json();
-  if(data.success){
-    hidden.value = data.filename;
-    alert('Image uploaded successfully');
-  } else {
-    alert('Upload failed: ' + (data.error || 'unknown'));
-    input.value = '';
-  }
-});
-</script>
+  btn.addEventListener('click', () => {
+    const file = input.files[0];
+    if (!file) return;
 
+    const formData = new FormData();
+    formData.append('image_tar', file);
+
+    const xhr = new XMLHttpRequest();
+
+    // Progress tracking (fetch doesn't support upload progress)
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        setProgress(pct);
+      }
+    });
+
+    xhr.upload.addEventListener('loadstart', () => {
+      wrap.style.display = 'block';
+      btn.disabled = true;
+      input.disabled = true;
+      setSubmitDisabled(true);
+      setStatus('Uploading…', 'info');
+      setProgress(0);
+    });
+
+    xhr.addEventListener('load', () => {
+      input.disabled = false;
+      setSubmitDisabled(false);
+
+      let data;
+      try { data = JSON.parse(xhr.responseText); }
+      catch (_) {
+        console.error('[docker upload] non-JSON response:', xhr.status, xhr.responseText);
+        setStatus(`Upload failed: unexpected server response (HTTP ${xhr.status}).`, 'danger');
+        input.value = '';
+        btn.disabled = true;
+        return;
+      }
+
+      if (data.success) {
+        hidden.value = data.filename;
+        setProgress(100);
+        bar.classList.remove('progress-bar-animated');
+        setStatus('✓ Upload complete: ' + data.filename, 'success');
+        btn.disabled = true;
+      } else {
+        setStatus('Upload failed: ' + (data.error || 'unknown error'), 'danger');
+        wrap.style.display = 'none';
+        input.value = '';
+        btn.disabled = true;
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      input.disabled = false;
+      setSubmitDisabled(false);
+      setStatus('Upload failed: network error.', 'danger');
+      wrap.style.display = 'none';
+      input.value = '';
+      btn.disabled = true;
+    });
+
+    xhr.addEventListener('abort', () => {
+      input.disabled = false;
+      setSubmitDisabled(false);
+      setStatus('Upload cancelled.', 'danger');
+      wrap.style.display = 'none';
+      btn.disabled = false;
+    });
+
+    xhr.open('POST', '{{ url_for("docker_image_challenge.upload_docker_image") }}');
+    xhr.setRequestHeader('X-CSRFToken', init.csrfNonce);
+    formData.append('nonce', init.csrfNonce);
+    xhr.send(formData);
+  });
+})();
+</script>
 {% endblock %}
+
 {% block type %}
 <input type="hidden" name="type" value="docker_image" id="chaltype">
 {% endblock %}

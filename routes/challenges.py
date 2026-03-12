@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from flask import Blueprint, request, jsonify, send_from_directory, current_app
+from flask import Blueprint, request, jsonify, send_from_directory, current_app, render_template_string
+from flask.templating import render_template
 from werkzeug.utils import secure_filename
 import os
 import uuid
@@ -19,15 +20,15 @@ MAX_IMAGE_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 bp = Blueprint("docker_image_challenge", __name__, template_folder="templates")
 
 
+
 def get_docker_store_path():
-    """Path inside CTFd's uploads directory for Docker .tar files."""
     path = Path("/var/images/")
     os.makedirs(path, exist_ok=True)
     return path
 
 
+
 def get_team_or_user():
-    """Return the current team, falling back to the current user (solo mode)."""
     team = get_current_team()
     if team:
         return team
@@ -40,7 +41,6 @@ def get_team_or_user():
 
 @bp.route("/docker/api/challenge/<int:challenge_id>/status", methods=["GET"])
 def api_docker_status(challenge_id):
-    """Return container existence/status/url for the current team on this challenge."""
     actor = get_team_or_user()
     if not actor:
         return jsonify({"success": False, "error": "You must be logged in"}), 403
@@ -53,7 +53,6 @@ def api_docker_status(challenge_id):
     if not container:
         return jsonify({"success": True, "exists": False})
 
-
     token = container.labels.get(DockerLabels.TOKEN)
     url = f"http://{token}.challenges.ctf:8008/"
     return jsonify({
@@ -65,9 +64,9 @@ def api_docker_status(challenge_id):
     })
 
 
+
 @bp.route("/docker/api/challenge/<int:challenge_id>/start", methods=["POST"])
 def api_docker_start(challenge_id):
-    """Start a new container for the user's team for this challenge."""
     actor = get_team_or_user()
     if not actor:
         return jsonify({"success": False, "error": "You must be logged in"}), 403
@@ -104,9 +103,9 @@ def api_docker_start(challenge_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+
 @bp.route("/docker/api/challenge/<int:challenge_id>/resume", methods=["POST"])
 def api_docker_resume(challenge_id):
-    """Resume an existing (stopped) container for the user's team."""
     actor = get_team_or_user()
     if not actor:
         return jsonify({"success": False, "error": "You must be logged in"}), 403
@@ -115,7 +114,7 @@ def api_docker_resume(challenge_id):
     if not manager:
         return jsonify({"success": False, "error": "Docker manager not configured"}), 500
 
-    container = manager.get_container_for_team_challenge(actor.id, challenge_id)
+    container = manager.get_container_for_team_challenge(actor.name, challenge_id)
     if not container:
         return jsonify({"success": False, "error": "No container exists to resume"}), 404
 
@@ -129,40 +128,122 @@ def api_docker_resume(challenge_id):
 
 
 # ---------------------------------------------------------------------------
+# Token-based API (used by the challenge-unavailable page)
+# ---------------------------------------------------------------------------
+
+@bp.route("/docker/api/token/<token>/status", methods=["GET"])
+def api_token_status(token):
+    """Return container status by token only — no auth required (token is the secret)."""
+    manager = current_app.docker_manager
+    if not manager:
+        return jsonify({"success": False, "error": "Docker manager not configured"}), 500
+
+    container = manager.get_container_by_token(token)
+    if not container:
+        return jsonify({"success": True, "exists": False})
+
+    url = f"http://{token}.challenges.ctf:8008/"
+    return jsonify({
+        "success": True,
+        "exists": True,
+        "status": container.status,
+        "url": url,
+        "token": token,
+    })
+
+
+
+@bp.route("/docker/api/token/<token>/resume", methods=["POST"])
+def api_token_resume(token):
+    """Resume a container by token only — no auth required (token is the secret)."""
+    manager = current_app.docker_manager
+    if not manager:
+        return jsonify({"success": False, "error": "Docker manager not configured"}), 500
+
+    container = manager.get_container_by_token(token)
+    if not container:
+        return jsonify({"success": False, "error": "Container not found"}), 404
+
+    try:
+        ok = manager.resume_container(token)
+        url = f"http://{token}.challenges.ctf:8008/"
+        return jsonify({"success": True, "resumed": ok, "token": token, "url": url})
+    except Exception as e:
+        current_app.logger.error(f"[DockerImageChallenge] Failed to resume container by token: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+
+@bp.route("/docker/api/token/<token>/keepalive", methods=["GET", "POST"])
+def api_token_keepalive(token):
+    """Called by nginx mirror on every proxied request to reset the suspension timer."""
+    manager = current_app.docker_manager
+    if not manager:
+        return "", 204
+    try:
+        manager.set_timers(token)
+    except Exception:
+        pass
+    return "", 204
+
+
+
+@bp.route("/challenge-unavailable/<token>")
+def challenge_unavailable(token):
+    ctfd_root = current_app.config.get("APPLICATION_ROOT", "").rstrip("/")
+    return render_template(
+        "challenge_unavailable.html",
+        token=token,
+        ctfd_root=ctfd_root,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Admin API
 # ---------------------------------------------------------------------------
 
 @bp.route("/admin/docker/upload", methods=["POST"])
 @admins_only
 def upload_docker_image():
-    """Accept a .tar Docker image upload from the admin challenge editor."""
     if "image_tar" not in request.files:
         return jsonify({"success": False, "error": "No file part"}), 400
 
     f = request.files["image_tar"]
     if not f.filename:
         return jsonify({"success": False, "error": "No file selected"}), 400
-
     if not f.filename.lower().endswith(".tar"):
         return jsonify({"success": False, "error": "Only .tar files are allowed"}), 400
 
-    f.seek(0, os.SEEK_END)
-    size = f.tell()
-    f.seek(0)
-    if size == 0 or size > MAX_IMAGE_SIZE:
-        return jsonify({"success": False, "error": f"File must be between 1 byte and {MAX_IMAGE_SIZE // 1024 ** 3} GB"}), 413
+    content_length = request.content_length
+    if content_length is not None:
+        if content_length == 0:
+            return jsonify({"success": False, "error": "Empty file"}), 400
+        if content_length > MAX_IMAGE_SIZE:
+            return jsonify({"success": False, "error": f"File too large (max {MAX_IMAGE_SIZE // 1024 ** 3} GB)"}), 413
 
     unique_filename = f"{uuid.uuid4().hex}_{secure_filename(f.filename)}"
     save_path = os.path.join(get_docker_store_path(), unique_filename)
 
     try:
-        f.save(save_path)
+        bytes_written = 0
+        with open(save_path, "wb") as out:
+            while chunk := f.stream.read(4 * 1024 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_IMAGE_SIZE:
+                    out.close()
+                    os.unlink(save_path)
+                    return jsonify({"success": False, "error": f"File too large (max {MAX_IMAGE_SIZE // 1024 ** 3} GB)"}), 413
+                out.write(chunk)
+
+        if bytes_written == 0:
+            os.unlink(save_path)
+            return jsonify({"success": False, "error": "Empty file"}), 400
 
         if not tarfile.is_tarfile(save_path):
             os.unlink(save_path)
             return jsonify({"success": False, "error": "Not a valid tar archive"}), 400
 
-        current_app.logger.info(f"[DockerImageChallenge] Uploaded {unique_filename} ({size / 1024 / 1024:.1f} MB)")
+        current_app.logger.info(f"[DockerImageChallenge] Uploaded {unique_filename} ({bytes_written / 1024 / 1024:.1f} MB)")
         return jsonify({"success": True, "filename": unique_filename})
 
     except Exception as e:
@@ -175,7 +256,6 @@ def upload_docker_image():
 @bp.route("/uploads/docker_images/<path:filename>")
 @admins_only
 def serve_docker_image(filename):
-    """Serve a stored Docker image tar (admin-only)."""
     return send_from_directory(get_docker_store_path(), filename)
 
 
@@ -222,7 +302,7 @@ class DockerImageChallenge(BaseChallenge):
         data["docker_container_status"] = None
         data["docker_container_url"] = None
         try:
-            actor = get_team_or_user()  # was: get_current_team() — missed solo users
+            actor = get_team_or_user()
             manager = current_app.docker_manager
             if actor and manager:
                 container = manager.get_container_for_team_challenge(actor.id, challenge.id)
@@ -235,7 +315,7 @@ class DockerImageChallenge(BaseChallenge):
             pass
 
         return data
-    
+
     @classmethod
     def update(cls, challenge, request):
         data = super().update(challenge, request)

@@ -6,16 +6,19 @@
     {% if docker_container_exists %}
       {% if docker_container_status == "running" %}
         <a id="docker-go" class="btn btn-success" href="{{ docker_container_url }}" target="_blank">Go to challenge</a>
+        <button id="docker-stop"  class="btn btn-secondary ms-1">Stop</button>
+        <button id="docker-reset" class="btn btn-danger ms-1">Reset</button>
       {% elif docker_container_status %}
-        <button id="docker-resume" class="btn btn-warning">Resume container</button>
-        <span class="ml-2 text-muted">Status: {{ docker_container_status }}</span>
+        <button id="docker-resume" class="btn btn-warning">Resume</button>
+        <button id="docker-reset"  class="btn btn-danger ms-1">Reset</button>
+        <span class="ms-2 text-muted">Status: {{ docker_container_status }}</span>
       {% else %}
         <button id="docker-start" class="btn btn-primary">Start container</button>
       {% endif %}
     {% else %}
       <button id="docker-start" class="btn btn-primary">Start container</button>
     {% endif %}
-    <span id="docker-msg" class="ml-2"></span>
+    <span id="docker-msg" class="ms-2"></span>
   </div>
   <hr>
 {% endblock %}

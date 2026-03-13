@@ -7,29 +7,27 @@
   CTFd._internal.challenge.postRender = function () {};
 
   /* ---------------- API helpers ---------------- */
-    
+
   function apiGet(path) {
-    if (CTFd.api && CTFd.api.get) {
-      return CTFd.api.get(path);
-    }
     return fetch(path, { credentials: "same-origin" }).then(r => r.json());
   }
 
-    function csrf() {
-      return CTFd.config.csrfNonce || "";
-    }
-
-    function apiPost(path, data) {
+  function apiPost(path, data) {
     return fetch(path, {
-        method: "POST",
-        credentials: "same-origin",   // session cookie
-        headers: {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
         "Content-Type": "application/json",
-        "CSRF-Token": csrf()
-        },
-        body: JSON.stringify(data)
-    }).then(r => r.json());
-    }
+        "CSRF-Token": init.csrfNonce,
+      },
+      body: JSON.stringify(data),
+    }).then(r => {
+      if (!r.ok && r.headers.get("content-type")?.includes("text/html")) {
+        throw new Error(`HTTP ${r.status}`);
+      }
+      return r.json();
+    });
+  }
 
   /* ---------------- UI rendering ---------------- */
 
@@ -38,8 +36,8 @@
 
     if (!resp || !resp.exists) {
       $container.html(
-        '<button id="docker-start" class="btn btn-primary">Start container</button>' +
-        ' <span id="docker-msg" class="ml-2"></span>'
+        `<button id="docker-start" class="btn btn-primary">Start container</button>` +
+        ` <span id="docker-msg" class="ms-2"></span>`
       );
       return;
     }
@@ -47,16 +45,35 @@
     if (resp.status === "running") {
       $container.html(
         `<a id="docker-go" class="btn btn-success" href="${resp.url}" target="_blank">Go to challenge</a>` +
-        ' <span id="docker-msg" class="ml-2"></span>'
+        ` <button id="docker-stop"  class="btn btn-secondary ms-1">Stop</button>` +
+        ` <button id="docker-reset" class="btn btn-danger ms-1">Reset</button>` +
+        ` <span id="docker-msg" class="ms-2"></span>`
       );
       return;
     }
 
+    // stopped / exited / other
     $container.html(
-      `<button id="docker-resume" class="btn btn-warning">Resume container</button>` +
-      ` <span class="ml-2 text-muted">Status: ${resp.status}</span>` +
-      ' <span id="docker-msg" class="ml-2"></span>'
+      `<button id="docker-resume" class="btn btn-warning">Resume</button>` +
+      ` <button id="docker-reset" class="btn btn-danger ms-1">Reset</button>` +
+      ` <span class="ms-2 text-muted">Status: ${resp.status}</span>` +
+      ` <span id="docker-msg" class="ms-2"></span>`
     );
+  }
+
+  /* ---------------- Helpers ---------------- */
+
+  function setMsg(text, isError) {
+    const $msg = $("#docker-msg");
+    $msg.text(text);
+    $msg.removeClass("text-danger text-muted");
+    $msg.addClass(isError ? "text-danger" : "text-muted");
+  }
+
+  function setAllDisabled(disabled) {
+    $("#docker-controls").find("button, a.btn").each(function () {
+      $(this).prop("disabled", disabled);
+    });
   }
 
   /* ---------------- Docker logic ---------------- */
@@ -66,93 +83,138 @@
     if (!$controls.length) return;
 
     apiGet(`/docker/api/challenge/${challenge_id}/status`)
-      .then(function (resp) {
+      .then(resp => {
         if (!resp || !resp.success) {
-          $controls.find("#docker-msg").text(resp?.error || "Cannot get docker status");
+          setMsg(resp?.error || "Cannot get docker status", true);
           return;
         }
         renderControls($controls, resp);
       })
-      .catch(function () {
-        $controls.find("#docker-msg").text("Error checking container");
+      .catch(() => setMsg("Error checking container status", true));
+  }
+
+  function docker_start(challenge_id) {
+    setMsg("Starting container…");
+    setAllDisabled(true);
+
+    apiPost(`/docker/api/challenge/${challenge_id}/start`, {})
+      .then(resp => {
+        if (resp.success) {
+          setMsg("Started! Waiting for container…");
+          pollUntilRunning(challenge_id, 10);
+        } else {
+          setMsg(resp.error || "Failed to start", true);
+          setAllDisabled(false);
+        }
+      })
+      .catch(err => {
+        setMsg("Failed to start: " + err.message, true);
+        setAllDisabled(false);
       });
   }
 
-function docker_start(challenge_id) {
-    const $controls = $("#docker-controls");
-    $controls.find("#docker-msg").text("Starting container…");
-    $controls.find("#docker-start").prop("disabled", true);
-
-    apiPost(`/docker/api/challenge/${challenge_id}/start`, {})
-        .then(function (resp) {
-            if (resp.success) {
-                $controls.find("#docker-msg").text("Started! Waiting for container…");
-                pollUntilRunning(challenge_id, 10); // retry up to 10 times
-            } else {
-                $controls.find("#docker-msg").text(resp.error || "Failed to start");
-                $controls.find("#docker-start").prop("disabled", false);
-            }
-        })
-        .catch(err => {
-            console.error("[docker] start error:", err);
-            $controls.find("#docker-msg").text("Failed to start: " + err.message);
-            $controls.find("#docker-start").prop("disabled", false);
-        });
-}
-
-function pollUntilRunning(challenge_id, attemptsLeft) {
-    if (attemptsLeft <= 0) {
-        $("#docker-controls").find("#docker-msg").text("Container is taking a while — try refreshing.");
-        return;
-    }
-    setTimeout(() => {
-        apiGet(`/docker/api/challenge/${challenge_id}/status`)
-            .then(resp => {
-                if (resp.success && resp.exists && resp.status === "running") {
-                    renderControls($("#docker-controls"), resp);
-                } else {
-                    pollUntilRunning(challenge_id, attemptsLeft - 1);
-                }
-            })
-            .catch(() => pollUntilRunning(challenge_id, attemptsLeft - 1));
-    }, 2000); // check every 2s
-}
-
   function docker_resume(challenge_id) {
-    const $controls = $("#docker-controls");
-    $controls.find("#docker-msg").text("Resuming container…");
+    setMsg("Resuming container…");
+    setAllDisabled(true);
 
     apiPost(`/docker/api/challenge/${challenge_id}/resume`, {})
-      .then(function (resp) {
+      .then(resp => {
         if (resp.success) {
-          $controls.find("#docker-msg").text("Resumed. Refreshing…");
-          setTimeout(() => docker_update_ui(challenge_id), 1000);
+          setMsg("Resumed! Waiting for container…");
+          pollUntilRunning(challenge_id, 10);
         } else {
-          $controls.find("#docker-msg").text(resp.error || "Failed to resume");
+          setMsg(resp.error || "Failed to resume", true);
+          setAllDisabled(false);
         }
       })
-      .catch(() => $controls.find("#docker-msg").text("Failed to resume"));
+      .catch(err => {
+        setMsg("Failed to resume: " + err.message, true);
+        setAllDisabled(false);
+      });
+  }
+
+  function docker_stop(challenge_id) {
+    if (!confirm("Stop and delete your container? Your progress will be lost.")) return;
+    setMsg("Stopping container…");
+    setAllDisabled(true);
+
+    apiPost(`/docker/api/challenge/${challenge_id}/stop`, {})
+      .then(resp => {
+        if (resp.success) {
+          setMsg("Container stopped.");
+          docker_update_ui(challenge_id);
+        } else {
+          setMsg(resp.error || "Failed to stop", true);
+          setAllDisabled(false);
+        }
+      })
+      .catch(err => {
+        setMsg("Failed to stop: " + err.message, true);
+        setAllDisabled(false);
+      });
+  }
+
+  function docker_reset(challenge_id) {
+    if (!confirm("Reset your container? This will delete it and start a fresh one.")) return;
+    setMsg("Resetting container…");
+    setAllDisabled(true);
+
+    apiPost(`/docker/api/challenge/${challenge_id}/reset`, {})
+      .then(resp => {
+        if (resp.success) {
+          setMsg("Reset! Waiting for new container…");
+          pollUntilRunning(challenge_id, 10);
+        } else {
+          setMsg(resp.error || "Failed to reset", true);
+          setAllDisabled(false);
+        }
+      })
+      .catch(err => {
+        setMsg("Failed to reset: " + err.message, true);
+        setAllDisabled(false);
+      });
+  }
+
+  function pollUntilRunning(challenge_id, attemptsLeft) {
+    if (attemptsLeft <= 0) {
+      setMsg("Container is taking a while — try refreshing.", true);
+      return;
+    }
+    setTimeout(() => {
+      apiGet(`/docker/api/challenge/${challenge_id}/status`)
+        .then(resp => {
+          if (resp.success && resp.exists && resp.status === "running") {
+            renderControls($("#docker-controls"), resp);
+            setMsg("");
+          } else {
+            pollUntilRunning(challenge_id, attemptsLeft - 1);
+          }
+        })
+        .catch(() => pollUntilRunning(challenge_id, attemptsLeft - 1));
+    }, 2000);
   }
 
   /* ---------------- Event delegation ---------------- */
 
-  $(document).on("click", "#docker-start", function () {
-    const challenge_id = parseInt($("#docker-controls").attr("data-challenge-id"));
-    docker_start(challenge_id);
+  $(document).on("click", "#docker-start",  function () {
+    docker_start(parseInt($("#docker-controls").attr("data-challenge-id")));
   });
-
   $(document).on("click", "#docker-resume", function () {
-    const challenge_id = parseInt($("#docker-controls").attr("data-challenge-id"));
-    docker_resume(challenge_id);
+    docker_resume(parseInt($("#docker-controls").attr("data-challenge-id")));
+  });
+  $(document).on("click", "#docker-stop",   function () {
+    docker_stop(parseInt($("#docker-controls").attr("data-challenge-id")));
+  });
+  $(document).on("click", "#docker-reset",  function () {
+    docker_reset(parseInt($("#docker-controls").attr("data-challenge-id")));
   });
 
   /* ---------------- Init ---------------- */
 
-  $(function () { 
+  $(function () {
     const challenge_id =
       parseInt($("#challenge-id").val()) ||
       parseInt($("#docker-controls").attr("data-challenge-id"));
-
     if (!challenge_id) return;
     docker_update_ui(challenge_id);
   });

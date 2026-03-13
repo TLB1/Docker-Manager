@@ -38,7 +38,7 @@
           {% set running = node.stats.running_count | default(0) %}
           {% set exited = node.stats.exited_count | default(0) %}
           <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{% if running > 0 %}#28a745{% else %}#6c757d{% endif %};margin-right:8px;"></span>
-          <small class="text-muted">{{ running }} running · {{ exited }} exited</small>
+          <small class="text-muted">{{ running }} running · {{ exited }} suspended</small>
         </div>
       </div>
     </div>

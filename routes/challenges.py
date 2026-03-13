@@ -127,9 +127,6 @@ def api_docker_resume(challenge_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-# ---------------------------------------------------------------------------
-# Token-based API (used by the challenge-unavailable page)
-# ---------------------------------------------------------------------------
 
 @bp.route("/docker/api/token/<token>/status", methods=["GET"])
 def api_token_status(token):
@@ -172,6 +169,71 @@ def api_token_resume(token):
         current_app.logger.error(f"[DockerImageChallenge] Failed to resume container by token: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+
+
+@bp.route("/docker/api/challenge/<int:challenge_id>/stop", methods=["POST"])
+def api_docker_stop(challenge_id):
+    actor = get_team_or_user()
+    if not actor:
+        return jsonify({"success": False, "error": "You must be logged in"}), 403
+
+    manager = current_app.docker_manager
+    if not manager:
+        return jsonify({"success": False, "error": "Docker manager not configured"}), 500
+
+    container = manager.get_container_for_team_challenge(actor.name, challenge_id)
+    if not container:
+        return jsonify({"success": False, "error": "No container found"}), 404
+
+    token = container.labels.get(DockerLabels.TOKEN)
+    try:
+        ok = manager.remove_container(token)  # was: suspend_container
+        return jsonify({"success": True, "stopped": ok})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+
+@bp.route("/docker/api/challenge/<int:challenge_id>/reset", methods=["POST"])
+def api_docker_reset(challenge_id):
+    actor = get_team_or_user()
+    if not actor:
+        return jsonify({"success": False, "error": "You must be logged in"}), 403
+
+    manager = current_app.docker_manager
+    if not manager:
+        return jsonify({"success": False, "error": "Docker manager not configured"}), 500
+
+    challenge = DockerImageChallengeModel.query.get(challenge_id)
+    if not challenge:
+        return jsonify({"success": False, "error": "Challenge not found"}), 404
+
+    # Remove existing container if present
+    container = manager.get_container_for_team_challenge(actor.name, challenge_id)
+    if container:
+        token = container.labels.get(DockerLabels.TOKEN)
+        manager.remove_container(token)
+
+    # Resolve image
+    image = None
+    if challenge.docker_image_filename:
+        tar_path = os.path.join(get_docker_store_path(), challenge.docker_image_filename)
+        image = manager._get_image_from_tar(tar_path)
+    elif challenge.docker_image_name:
+        image = challenge.docker_image_name
+    else:
+        return jsonify({"success": False, "error": "No docker image configured"}), 400
+
+    container_port = challenge.docker_port or 80
+
+    try:
+        token = manager.create_container(actor.name, challenge_id, image, container_port=container_port)
+        url = f"http://{token}.challenges.ctf:8008/"
+        return jsonify({"success": True, "token": token, "url": url})
+    except Exception as e:
+        current_app.logger.error(f"[DockerImageChallenge] Reset failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    
 
 
 @bp.route("/docker/api/token/<token>/keepalive", methods=["GET", "POST"])

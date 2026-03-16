@@ -1,24 +1,15 @@
 {% extends "challenge.html" %}
 {% block description %}
   {{ challenge.html }}
+
   <hr>
   <div id="docker-controls" class="mt-3" data-challenge-id="{{ challenge.id }}">
-    {% if docker_container_exists %}
-      {% if docker_container_status == "running" %}
-        <a id="docker-go" class="btn btn-success" href="{{ docker_container_url }}" target="_blank">Go to challenge</a>
-        <button id="docker-stop"  class="btn btn-secondary ms-1">Stop</button>
-        <button id="docker-reset" class="btn btn-danger ms-1">Reset</button>
-      {% elif docker_container_status %}
-        <button id="docker-resume" class="btn btn-warning">Resume</button>
-        <button id="docker-reset"  class="btn btn-danger ms-1">Reset</button>
-        <span class="ms-2 text-muted">Status: {{ docker_container_status }}</span>
-      {% else %}
-        <button id="docker-start" class="btn btn-primary">Start container</button>
-      {% endif %}
-    {% else %}
-      <button id="docker-start" class="btn btn-primary">Start container</button>
-    {% endif %}
-    <span id="docker-msg" class="ms-2"></span>
+    <div id="docker-action-bar" class="d-flex align-items-center flex-wrap gap-2 mb-3">
+      <span class="text-muted small">Loading…</span>
+    </div>
+    <hr>
+    <div id="docker-container-cards" class="row g-2"></div>
   </div>
+
   <hr>
 {% endblock %}

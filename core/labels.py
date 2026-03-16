@@ -3,3 +3,4 @@ class DockerLabels:
     TEAM = "ctfd-team-id"
     CHALLENGE = "ctfd-challenge-id"
     TOKEN = "ctfd-token"
+    CONTAINER_INDEX = "ctfd-container-index"

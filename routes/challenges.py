@@ -20,12 +20,10 @@ MAX_IMAGE_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 bp = Blueprint("docker_image_challenge", __name__, template_folder="templates")
 
 
-
 def get_docker_store_path():
     path = Path("/var/images/")
     os.makedirs(path, exist_ok=True)
     return path
-
 
 
 def get_team_or_user():
@@ -33,6 +31,109 @@ def get_team_or_user():
     if team:
         return team
     return get_current_user()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_image_for_config(config):
+    """Return the docker image tag/name for a DockerContainerConfig row."""
+    if config.docker_image_filename:
+        tar_path = os.path.join(get_docker_store_path(), config.docker_image_filename)
+        manager = current_app.docker_manager
+        return manager._get_image_from_tar(tar_path), tar_path
+    if config.docker_image_name:
+        return config.docker_image_name, None
+    return None, None
+
+
+def _start_all_containers(manager, actor_name, challenge_id, configs):
+    """
+    Start one container per DockerContainerConfig entry.
+    Returns a list of dicts: [{index, label, token, url}, ...]
+    Raises on first failure.
+    """
+    results = []
+    for cfg in configs:
+        image, tar_path = _resolve_image_for_config(cfg)
+        if image is None:
+            raise ValueError(f"Container '{cfg.label or cfg.container_index}' has no image configured")
+
+        if tar_path:
+            try:
+                manager.sync_tar_image(tar_path)
+            except Exception as e:
+                current_app.logger.warning(
+                    f"[DockerImageChallenge] Image sync warning for config {cfg.id}: {e}"
+                )
+
+        token = manager.create_container(
+            actor_name,
+            challenge_id,
+            image,
+            container_port=cfg.container_port or 80,
+            container_index=cfg.container_index,   # passed as an extra label
+        )
+        url = f"http://{token}.challenges.ctf:8008/"
+        results.append({
+            "index": cfg.container_index,
+            "label": cfg.label or f"Container {cfg.container_index}",
+            "token": token,
+            "url": url,
+        })
+    return results
+
+
+def _remove_all_containers(manager, actor_name, challenge_id, configs):
+    """Remove every running container for the given challenge."""
+    for cfg in configs:
+        container = manager.get_container_for_team_challenge(
+            actor_name, challenge_id, container_index=cfg.container_index
+        )
+        if container:
+            token = container.labels.get(DockerLabels.TOKEN)
+            try:
+                manager.remove_container(token)
+            except Exception as e:
+                current_app.logger.warning(
+                    f"[DockerImageChallenge] Could not remove container {token}: {e}"
+                )
+
+
+def _container_status_list(manager, actor_name, challenge_id, configs):
+    """
+    Return a status list for every config entry.
+    Each entry: {index, label, port_mappings, exists, status, token, url}
+    port_mappings is always included so the JS can render labelled port links.
+    """
+    results = []
+    for cfg in configs:
+        container = manager.get_container_for_team_challenge(
+            actor_name, challenge_id, container_index=cfg.container_index
+        )
+        if container:
+            token = container.labels.get(DockerLabels.TOKEN)
+            results.append({
+                "index": cfg.container_index,
+                "label": cfg.label or f"Container {cfg.container_index}",
+                "port_mappings": cfg.port_mappings,
+                "exists": True,
+                "status": container.status,
+                "token": token,
+                "url": f"http://{token}.challenges.ctf:8008/",
+            })
+        else:
+            results.append({
+                "index": cfg.container_index,
+                "label": cfg.label or f"Container {cfg.container_index}",
+                "port_mappings": cfg.port_mappings,
+                "exists": False,
+                "status": None,
+                "token": None,
+                "url": None,
+            })
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -49,20 +150,19 @@ def api_docker_status(challenge_id):
     if not manager:
         return jsonify({"success": False, "error": "Docker manager not configured"}), 500
 
-    container = manager.get_container_for_team_challenge(actor.name, challenge_id)
-    if not container:
-        return jsonify({"success": True, "exists": False})
+    challenge = DockerImageChallengeModel.query.get(challenge_id)
+    if not challenge:
+        return jsonify({"success": False, "error": "Challenge not found"}), 404
 
-    token = container.labels.get(DockerLabels.TOKEN)
-    url = f"http://{token}.challenges.ctf:8008/"
+    configs = _get_ordered_configs(challenge_id)
+    containers = _container_status_list(manager, actor.name, challenge_id, configs)
+
     return jsonify({
         "success": True,
-        "exists": True,
-        "status": container.status,
-        "url": url,
-        "token": token,
+        "containers": containers,
+        # Convenience: overall "exists" is True if at least one container is up
+        "exists": any(c["exists"] for c in containers),
     })
-
 
 
 @bp.route("/docker/api/challenge/<int:challenge_id>/start", methods=["POST"])
@@ -79,29 +179,16 @@ def api_docker_start(challenge_id):
     if not challenge:
         return jsonify({"success": False, "error": "Challenge not found"}), 404
 
-    image = None
-    if challenge.docker_image_filename:
-        tar_path = os.path.join(get_docker_store_path(), challenge.docker_image_filename)
-        image = manager._get_image_from_tar(tar_path)
-        try:
-            manager.sync_tar_image(tar_path)
-        except Exception as e:
-            current_app.logger.warning(f"[DockerImageChallenge] Image sync warning: {e}")
-    elif challenge.docker_image_name:
-        image = challenge.docker_image_name
-    else:
-        return jsonify({"success": False, "error": "No docker image configured for this challenge"}), 400
-
-    container_port = challenge.docker_port or 80
+    configs = _get_ordered_configs(challenge_id)
+    if not configs:
+        return jsonify({"success": False, "error": "No containers configured for this challenge"}), 400
 
     try:
-        token = manager.create_container(actor.name, challenge_id, image, container_port=container_port)
-        url = f"http://{token}.challenges.ctf:8008/"
-        return jsonify({"success": True, "token": token, "url": url})
+        results = _start_all_containers(manager, actor.name, challenge_id, configs)
+        return jsonify({"success": True, "containers": results})
     except Exception as e:
-        current_app.logger.error(f"[DockerImageChallenge] Failed to start container: {e}")
+        current_app.logger.error(f"[DockerImageChallenge] Failed to start containers: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-
 
 
 @bp.route("/docker/api/challenge/<int:challenge_id>/resume", methods=["POST"])
@@ -114,18 +201,37 @@ def api_docker_resume(challenge_id):
     if not manager:
         return jsonify({"success": False, "error": "Docker manager not configured"}), 500
 
-    container = manager.get_container_for_team_challenge(actor.name, challenge_id)
-    if not container:
-        return jsonify({"success": False, "error": "No container exists to resume"}), 404
+    challenge = DockerImageChallengeModel.query.get(challenge_id)
+    if not challenge:
+        return jsonify({"success": False, "error": "Challenge not found"}), 404
 
-    token = container.labels.get(DockerLabels.TOKEN)
-    try:
-        ok = manager.resume_container(token)
-        return jsonify({"success": True, "resumed": ok, "token": token})
-    except Exception as e:
-        current_app.logger.error(f"[DockerImageChallenge] Failed to resume container: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+    configs = _get_ordered_configs(challenge_id)
+    resumed = []
+    errors = []
 
+    for cfg in configs:
+        container = manager.get_container_for_team_challenge(
+            actor.name, challenge_id, container_index=cfg.container_index
+        )
+        if not container:
+            errors.append(f"No container for index {cfg.container_index}")
+            continue
+        token = container.labels.get(DockerLabels.TOKEN)
+        try:
+            ok = manager.resume_container(token)
+            resumed.append({
+                "index": cfg.container_index,
+                "label": cfg.label or f"Container {cfg.container_index}",
+                "token": token,
+                "resumed": ok,
+            })
+        except Exception as e:
+            current_app.logger.error(
+                f"[DockerImageChallenge] Failed to resume container {token}: {e}"
+            )
+            errors.append(str(e))
+
+    return jsonify({"success": True, "resumed": resumed, "errors": errors})
 
 
 @bp.route("/docker/api/token/<token>/status", methods=["GET"])
@@ -149,7 +255,6 @@ def api_token_status(token):
     })
 
 
-
 @bp.route("/docker/api/token/<token>/resume", methods=["POST"])
 def api_token_resume(token):
     """Resume a container by token only — no auth required (token is the secret)."""
@@ -170,7 +275,6 @@ def api_token_resume(token):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-
 @bp.route("/docker/api/challenge/<int:challenge_id>/stop", methods=["POST"])
 def api_docker_stop(challenge_id):
     actor = get_team_or_user()
@@ -181,17 +285,13 @@ def api_docker_stop(challenge_id):
     if not manager:
         return jsonify({"success": False, "error": "Docker manager not configured"}), 500
 
-    container = manager.get_container_for_team_challenge(actor.name, challenge_id)
-    if not container:
-        return jsonify({"success": False, "error": "No container found"}), 404
+    challenge = DockerImageChallengeModel.query.get(challenge_id)
+    if not challenge:
+        return jsonify({"success": False, "error": "Challenge not found"}), 404
 
-    token = container.labels.get(DockerLabels.TOKEN)
-    try:
-        ok = manager.remove_container(token)  # was: suspend_container
-        return jsonify({"success": True, "stopped": ok})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
+    configs = _get_ordered_configs(challenge_id)
+    _remove_all_containers(manager, actor.name, challenge_id, configs)
+    return jsonify({"success": True, "stopped": True})
 
 
 @bp.route("/docker/api/challenge/<int:challenge_id>/reset", methods=["POST"])
@@ -208,32 +308,18 @@ def api_docker_reset(challenge_id):
     if not challenge:
         return jsonify({"success": False, "error": "Challenge not found"}), 404
 
-    # Remove existing container if present
-    container = manager.get_container_for_team_challenge(actor.name, challenge_id)
-    if container:
-        token = container.labels.get(DockerLabels.TOKEN)
-        manager.remove_container(token)
+    configs = _get_ordered_configs(challenge_id)
+    if not configs:
+        return jsonify({"success": False, "error": "No containers configured for this challenge"}), 400
 
-    # Resolve image
-    image = None
-    if challenge.docker_image_filename:
-        tar_path = os.path.join(get_docker_store_path(), challenge.docker_image_filename)
-        image = manager._get_image_from_tar(tar_path)
-    elif challenge.docker_image_name:
-        image = challenge.docker_image_name
-    else:
-        return jsonify({"success": False, "error": "No docker image configured"}), 400
-
-    container_port = challenge.docker_port or 80
+    _remove_all_containers(manager, actor.name, challenge_id, configs)
 
     try:
-        token = manager.create_container(actor.name, challenge_id, image, container_port=container_port)
-        url = f"http://{token}.challenges.ctf:8008/"
-        return jsonify({"success": True, "token": token, "url": url})
+        results = _start_all_containers(manager, actor.name, challenge_id, configs)
+        return jsonify({"success": True, "containers": results})
     except Exception as e:
         current_app.logger.error(f"[DockerImageChallenge] Reset failed: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-    
 
 
 @bp.route("/docker/api/token/<token>/keepalive", methods=["GET", "POST"])
@@ -249,7 +335,6 @@ def api_token_keepalive(token):
     return "", 204
 
 
-
 @bp.route("/challenge-unavailable/<token>")
 def challenge_unavailable(token):
     ctfd_root = current_app.config.get("APPLICATION_ROOT", "").rstrip("/")
@@ -261,7 +346,7 @@ def challenge_unavailable(token):
 
 
 # ---------------------------------------------------------------------------
-# Admin API
+# Admin API — image upload (unchanged)
 # ---------------------------------------------------------------------------
 
 @bp.route("/admin/docker/upload", methods=["POST"])
@@ -315,20 +400,235 @@ def upload_docker_image():
         return jsonify({"success": False, "error": "Upload failed"}), 500
 
 
+# ---------------------------------------------------------------------------
+# Admin API — container config CRUD
+# ---------------------------------------------------------------------------
+
+@bp.route("/admin/docker/challenge/<int:challenge_id>/containers", methods=["GET"])
+@admins_only
+def admin_list_containers(challenge_id):
+    configs = _get_ordered_configs(challenge_id)
+    return jsonify({
+        "success": True,
+        "containers": [_config_to_dict(c) for c in configs],
+    })
+
+
+@bp.route("/admin/docker/challenge/<int:challenge_id>/containers", methods=["POST"])
+@admins_only
+def admin_add_container(challenge_id):
+    """Append a new container config to the challenge."""
+    body = request.get_json() or {}
+
+    # Auto-assign the next index
+    last = (
+        DockerContainerConfig.query
+        .filter_by(challenge_id=challenge_id)
+        .order_by(DockerContainerConfig.container_index.desc())
+        .first()
+    )
+    next_index = (last.container_index + 1) if last else 0
+
+    cfg = DockerContainerConfig(
+        challenge_id=challenge_id,
+        container_index=next_index,
+        label=body.get("label") or None,
+        docker_image_filename=body.get("docker_image_filename") or None,
+        docker_image_name=body.get("docker_image_name") or None,
+        container_port=_int_or_none(body.get("container_port")),
+    )
+    db.session.add(cfg)
+    db.session.commit()
+    return jsonify({"success": True, "container": _config_to_dict(cfg)}), 201
+
+
+@bp.route("/admin/docker/challenge/<int:challenge_id>/containers/<int:config_id>", methods=["PATCH"])
+@admins_only
+def admin_update_container(challenge_id, config_id):
+    cfg = DockerContainerConfig.query.filter_by(id=config_id, challenge_id=challenge_id).first_or_404()
+    body = request.get_json() or {}
+
+    if "label" in body:
+        cfg.label = body["label"] or None
+
+    if "docker_image_filename" in body:
+        new_fn = body["docker_image_filename"] or None
+        if cfg.docker_image_filename and cfg.docker_image_filename != new_fn:
+            DockerImageChallenge._delete_image_file(cfg.docker_image_filename)
+        cfg.docker_image_filename = new_fn
+
+    if "docker_image_name" in body:
+        cfg.docker_image_name = body["docker_image_name"] or None
+
+    if "container_port" in body:
+        cfg.container_port = _int_or_none(body["container_port"])
+
+    db.session.commit()
+    return jsonify({"success": True, "container": _config_to_dict(cfg)})
+
+
+@bp.route("/admin/docker/challenge/<int:challenge_id>/containers/<int:config_id>", methods=["DELETE"])
+@admins_only
+def admin_delete_container(challenge_id, config_id):
+    cfg = DockerContainerConfig.query.filter_by(id=config_id, challenge_id=challenge_id).first_or_404()
+    if cfg.docker_image_filename:
+        DockerImageChallenge._delete_image_file(cfg.docker_image_filename)
+    db.session.delete(cfg)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
 @bp.route("/uploads/docker_images/<path:filename>")
 @admins_only
 def serve_docker_image(filename):
     return send_from_directory(get_docker_store_path(), filename)
 
 
+@bp.route("/admin/docker/images", methods=["GET"])
+@admins_only
+def admin_list_registry_images():
+    """
+    Return all Docker images available on every node, deduplicated by tag.
+    Each entry: { tag, id, size_mb, node }
+    Untagged/intermediate images are skipped.
+    """
+    manager = current_app.docker_manager
+    if not manager:
+        return jsonify({"success": False, "error": "Docker manager not configured"}), 500
+
+    seen: set = set()
+    images = []
+
+    for node in manager.nodes:
+        try:
+            node_images = manager._node_call(node, node.client.images.list)
+            for img in node_images:
+                for tag in (img.tags or []):
+                    if tag in seen:
+                        continue
+                    seen.add(tag)
+                    images.append({
+                        "tag":     tag,
+                        "id":      img.short_id,
+                        "size_mb": round(img.attrs.get("Size", 0) / 1024 / 1024, 1),
+                        "node":    node.address,
+                    })
+        except Exception as e:
+            current_app.logger.warning(
+                f"[DockerImageChallenge] Could not list images on {node}: {e}"
+            )
+
+    images.sort(key=lambda x: x["tag"])
+    return jsonify({"success": True, "images": images})
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _get_ordered_configs(challenge_id):
+    return (
+        DockerContainerConfig.query
+        .filter_by(challenge_id=challenge_id)
+        .order_by(DockerContainerConfig.container_index.asc())
+        .all()
+    )
+
+
+def _config_to_dict(cfg):
+    return {
+        "id": cfg.id,
+        "challenge_id": cfg.challenge_id,
+        "index": cfg.container_index,
+        "label": cfg.label,
+        "docker_image_filename": cfg.docker_image_filename,
+        "docker_image_name": cfg.docker_image_name,
+        # port_mappings is a JSON list of {container_port, host_label} objects
+        # stored in the new column; fall back to legacy single-port for old rows.
+        "port_mappings": cfg.port_mappings if cfg.port_mappings else (
+            [{"container_port": cfg.container_port}] if cfg.container_port else []
+        ),
+    }
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
 
+class DockerContainerConfig(db.Model):
+    """
+    One row per container that belongs to a challenge.
+    A challenge can have many of these (one-to-many).
+    """
+    __tablename__ = "docker_container_configs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    challenge_id = db.Column(
+        db.Integer,
+        db.ForeignKey("challenges.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Stable ordinal used as an extra Docker label so the manager can look up
+    # "the second container of challenge 42 for team foo" deterministically.
+    container_index = db.Column(db.Integer, nullable=False, default=0)
+    # Human-readable name shown in the UI (e.g. "Web server", "Database")
+    label = db.Column(db.String(128), nullable=True)
+    # Exactly one of the two image fields should be set.
+    docker_image_filename = db.Column(db.String(512), nullable=True)
+    docker_image_name = db.Column(db.String(512), nullable=True)
+    # Legacy single-port column kept for DB backwards compatibility.
+    container_port = db.Column(db.Integer, nullable=True, default=80)
+    # JSON list of port mappings: [{"container_port": 80, "label": "HTTP"}, ...]
+    # When present this takes precedence over the legacy container_port column.
+    _port_mappings = db.Column("port_mappings", db.Text, nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("challenge_id", "container_index", name="uq_challenge_container_index"),
+    )
+
+    @property
+    def port_mappings(self):
+        """Return port mappings as a Python list, falling back to legacy column."""
+        import json as _json
+        if self._port_mappings:
+            try:
+                return _json.loads(self._port_mappings)
+            except Exception:
+                pass
+        if self.container_port:
+            return [{"container_port": self.container_port, "label": ""}]
+        return []
+
+    @port_mappings.setter
+    def port_mappings(self, value):
+        import json as _json
+        self._port_mappings = _json.dumps(value) if value is not None else None
+        # Keep legacy column in sync with the first mapping for old code paths.
+        if value:
+            self.container_port = value[0].get("container_port")
+        else:
+            self.container_port = None
+
+
 class DockerImageChallengeModel(Challenges):
     __mapper_args__ = {"polymorphic_identity": "docker_image"}
 
-    id = db.Column(db.Integer, db.ForeignKey("challenges.id", ondelete="CASCADE"), primary_key=True)
+    id = db.Column(
+        db.Integer,
+        db.ForeignKey("challenges.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # The actual per-container configuration lives in DockerContainerConfig.
+    # These columns are kept for backwards compatibility with existing DB rows
+    # but new challenges should use the container config table instead.
     docker_image_filename = db.Column(db.String(512), nullable=True)
     docker_image_name = db.Column(db.String(512), nullable=True)
     docker_port = db.Column(db.Integer, nullable=True)
@@ -354,25 +654,66 @@ class DockerImageChallenge(BaseChallenge):
     challenge_model = DockerImageChallengeModel
 
     @classmethod
+    def create(cls, request):
+        """
+        CTFd's BaseChallenge.create() does `cls.challenge_model(**request.form)`
+        which blows up on our extra `docker_containers_json` field.
+        We replicate the base logic here, stripping that field first.
+        """
+        import json as _json
+
+        data = request.form.to_dict() if request.form else (request.get_json() or {})
+
+        # Pull out our field before it reaches the SQLAlchemy constructor.
+        raw_json = data.pop("docker_containers_json", "[]")
+
+        challenge = cls.challenge_model(**data)
+        db.session.add(challenge)
+        db.session.commit()
+
+        # Parse and persist the container configs.
+        try:
+            containers = _json.loads(raw_json) if raw_json else []
+        except Exception:
+            containers = []
+
+        for cfg_data in containers:
+            cfg = DockerContainerConfig(
+                challenge_id=challenge.id,
+                container_index=cfg_data.get("index", 0),
+                label=cfg_data.get("label") or None,
+                docker_image_filename=cfg_data.get("docker_image_filename") or None,
+                docker_image_name=cfg_data.get("docker_image_name") or None,
+            )
+            cfg.port_mappings = cfg_data.get("port_mappings") or []
+            db.session.add(cfg)
+
+        db.session.commit()
+        return challenge
+
+    @classmethod
     def read(cls, challenge):
         data = super().read(challenge)
+
+        # Include the full container config list.
+        configs = _get_ordered_configs(challenge.id)
+        data["containers"] = [_config_to_dict(c) for c in configs]
+
+        # Backwards-compat fields
         data["docker_image_filename"] = challenge.docker_image_filename
         data["docker_image_name"] = challenge.docker_image_name
         data["docker_port"] = challenge.docker_port
 
+        # Live container status for each config entry
         data["docker_container_exists"] = False
-        data["docker_container_status"] = None
-        data["docker_container_url"] = None
+        data["docker_containers"] = []
         try:
             actor = get_team_or_user()
             manager = current_app.docker_manager
             if actor and manager:
-                container = manager.get_container_for_team_challenge(actor.id, challenge.id)
-                if container:
-                    token = container.labels.get(DockerLabels.TOKEN)
-                    data["docker_container_exists"] = True
-                    data["docker_container_status"] = container.status
-                    data["docker_container_url"] = f"http://{token}.challenges.ctf:8008/"
+                statuses = _container_status_list(manager, actor.name, challenge.id, configs)
+                data["docker_containers"] = statuses
+                data["docker_container_exists"] = any(s["exists"] for s in statuses)
         except Exception:
             pass
 
@@ -383,6 +724,7 @@ class DockerImageChallenge(BaseChallenge):
         data = super().update(challenge, request)
         body = request.form or request.get_json() or {}
 
+        # Backwards-compat single-image fields
         new_filename = body.get("docker_image_filename")
         if new_filename is not None:
             old_filename = challenge.docker_image_filename
@@ -394,18 +736,24 @@ class DockerImageChallenge(BaseChallenge):
             challenge.docker_image_name = body["docker_image_name"] or None
 
         if "docker_port" in body:
-            try:
-                challenge.docker_port = int(body["docker_port"])
-            except (TypeError, ValueError):
-                challenge.docker_port = None
+            challenge.docker_port = _int_or_none(body["docker_port"])
 
         db.session.commit()
         return data
 
     @classmethod
     def delete(cls, challenge):
+        # Remove every container config and their uploaded image files.
+        configs = _get_ordered_configs(challenge.id)
+        for cfg in configs:
+            if cfg.docker_image_filename:
+                cls._delete_image_file(cfg.docker_image_filename)
+            db.session.delete(cfg)
+
+        # Also clean up the legacy single-image field if set.
         if challenge.docker_image_filename:
             cls._delete_image_file(challenge.docker_image_filename)
+
         return super().delete(challenge)
 
     @staticmethod

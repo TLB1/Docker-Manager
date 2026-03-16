@@ -1,8 +1,14 @@
+from dataclasses import dataclass, field
+from typing import Optional
+ 
+ 
+@dataclass
 class ContainerDetails:
-    def __init__(self, challenge: str, team: str, token: str, url: str, image: str, status: str):
-        self.challenge = challenge
-        self.team = team
-        self.token = token
-        self.url = url
-        self.image = image
-        self.status = status
+    challenge: Optional[str] = None
+    team: Optional[str] = None
+    token: Optional[str] = None
+    container_index: Optional[str] = None 
+    url: Optional[str] = None
+    image: Optional[object] = None
+    status: Optional[str] = None
+ 

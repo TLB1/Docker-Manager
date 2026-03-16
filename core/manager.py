@@ -168,15 +168,42 @@ class DockerManager:
             filters={"label": [f"{DockerLabels.TEAM}={team_id}"]},
         )
 
-    def get_container_for_team_challenge(self, team_id: int, challenge_id: int) -> Optional[Container]:
-        containers = self._query_containers(
+    def get_container_for_team_challenge(
+        self,
+        team_id: int,
+        challenge_id: int,
+        container_index: Optional[int] = None,
+    ) -> Optional[Container]:
+        """
+        Look up a container by team + challenge, optionally narrowed to a
+        specific container_index within a multi-container challenge.
+
+        If container_index is None the first matching container is returned
+        (backwards-compatible behaviour for single-container challenges).
+        """
+        labels = [
+            f"{DockerLabels.TEAM}={team_id}",
+            f"{DockerLabels.CHALLENGE}={challenge_id}",
+        ]
+        if container_index is not None:
+            labels.append(f"{DockerLabels.CONTAINER_INDEX}={container_index}")
+
+        containers = self._query_containers(all=True, filters={"label": labels})
+        return containers[0] if containers else None
+
+    def get_containers_for_team_challenge(
+        self,
+        team_id: int,
+        challenge_id: int,
+    ) -> List[Container]:
+        """Return ALL containers for a team+challenge (one per container_index)."""
+        return self._query_containers(
             all=True,
             filters={"label": [
                 f"{DockerLabels.TEAM}={team_id}",
                 f"{DockerLabels.CHALLENGE}={challenge_id}",
             ]},
         )
-        return containers[0] if containers else None
 
     def running_containers(self, client: DockerClient) -> List[Container]:
         return client.containers.list(
@@ -195,10 +222,37 @@ class DockerManager:
     # ------------------------------------------------------------------ #
 
     def can_create_container(self, team_id) -> bool:
-        running = self.running_containers_for_team(team_id)
-        return len(running) < RuntimeConfig.MAX_ACTIVE_CONTAINERS_PER_GROUP
+        """
+        Check whether the team is within the per-group container quota.
 
-    def create_container(self, team_id, challenge_id, image, container_port=80) -> str:
+        The quota counts *challenges* rather than raw containers, because a
+        single challenge now spins up multiple containers.  Each challenge is
+        identified by a unique (team, challenge_id) pair so we count distinct
+        challenge labels across all running containers for the team.
+        """
+        running = self.running_containers_for_team(team_id)
+        challenge_ids = {
+            c.labels.get(DockerLabels.CHALLENGE)
+            for c in running
+            if c.labels.get(DockerLabels.CHALLENGE)
+        }
+        return len(challenge_ids) < RuntimeConfig.MAX_ACTIVE_CONTAINERS_PER_GROUP
+
+    def create_container(
+        self,
+        team_id,
+        challenge_id,
+        image,
+        container_port: int = 80,
+        container_index: int = 0,
+    ) -> str:
+        """
+        Spin up a single container and return its token.
+
+        container_index identifies which container within a multi-container
+        challenge this is (0-based).  It is stored as a Docker label so that
+        get_container_for_team_challenge() can retrieve it unambiguously.
+        """
         if not self.can_create_container(team_id):
             raise Exception("Team container quota exceeded")
 
@@ -206,7 +260,7 @@ class DockerManager:
         token = f"{secrets.randbits(48):08x}"
         node = self._next_node()
         host_port = self.ports_manager.allocate_port(token, node.address)
-        print(f"{image} - {node.address}:{host_port}")
+        print(f"{image} [{container_index}] - {node.address}:{host_port}")
 
         try:
             # No retries — containers.run() is not idempotent.
@@ -221,6 +275,7 @@ class DockerManager:
                     DockerLabels.TEAM: str(team_id),
                     DockerLabels.CHALLENGE: str(challenge_id),
                     DockerLabels.TOKEN: token,
+                    DockerLabels.CONTAINER_INDEX: str(container_index),
                 },
                 ports={f"{container_port}/tcp": host_port},
             )
@@ -348,6 +403,7 @@ class DockerManager:
                     challenge=container.labels.get(DockerLabels.CHALLENGE),
                     team=container.labels.get(DockerLabels.TEAM),
                     token=container.labels.get(DockerLabels.TOKEN),
+                    container_index=container.labels.get(DockerLabels.CONTAINER_INDEX),
                     url=f"http://{container.labels.get(DockerLabels.TOKEN)}.challenges.ctf:8008/",
                     image=container.image,
                     status=container.status,

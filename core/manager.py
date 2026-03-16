@@ -52,11 +52,6 @@ def _make_docker_client_over_ssh(ssh_pool: SSHPool, node: Node) -> DockerClient:
             )
             return chan
 
-    # Use unix socket tunnelled over SSH — the standard way Docker SDK does it
-    # but reusing our transport.  We need a plain socket-like object.
-    # The simplest approach: use the SDK's own ssh:// URL but override
-    # paramiko usage to call our pool.
-
     # Simplest correct approach: just create a new DockerClient via ssh://
     # but wrap _query calls with reconnect.  The adapter above is complex;
     # for now return a fresh client and let the caller handle ChannelException.

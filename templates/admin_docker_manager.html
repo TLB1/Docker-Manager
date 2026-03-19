@@ -9,230 +9,234 @@
 
       <form id="docker-config-form" onsubmit="return false;">
         <!-- Worker Nodes Section -->
-<div class="mb-3">
-  <hr>
-  <strong>Worker Nodes</strong>
-  <div id="worker-nodes-list" class="mb-1">
-    {% if values.WORKER_NODES %}
-      {% for node in values.WORKER_NODES %}
-      <div class="input-group mb-1 worker-node-entry" style="max-width: 50%;">
-        <input type="text" class="form-control worker-node-input" value="{{ node }}" placeholder="user@host">
-        <button type="button" class="btn btn-danger remove-node-btn">X</button>
-      </div>
-      {% endfor %}
-    {% else %}
-      <div class="input-group mb-1 worker-node-entry" style="max-width: 50%;">
-        <input type="text" class="form-control worker-node-input" placeholder="user@host">
-        <button type="button" class="btn btn-danger remove-node-btn">X</button>
-      </div>
-    {% endif %}
-  </div>
+        <div class="mb-3">
+          <hr>
+          <strong>Worker Nodes</strong>
+          <div id="worker-nodes-list" class="mb-1">
+            {% if values.WORKER_NODES %}
+              {% for node in values.WORKER_NODES %}
+              <div class="input-group mb-1 worker-node-entry" style="max-width: 50%;">
+                <input type="text" class="form-control worker-node-input" value="{{ node }}" placeholder="user@host">
+                <button type="button" class="btn btn-danger remove-node-btn">X</button>
+              </div>
+              {% endfor %}
+            {% else %}
+              <div class="input-group mb-1 worker-node-entry" style="max-width: 50%;">
+                <input type="text" class="form-control worker-node-input" placeholder="user@host">
+                <button type="button" class="btn btn-danger remove-node-btn">X</button>
+              </div>
+            {% endif %}
+          </div>
+          <button type="button" id="add-node-btn" class="btn btn-secondary btn-sm mb-1">+ Add Node</button>
+          <button id="save-btn" type="button" onclick="saveConfig()" class="btn btn-primary btn-sm mb-1">Save</button>
+          <small class="form-text text-muted">
+            Define the Docker worker nodes used by the Docker Manager. Each node should be specified in the format <code>user@host</code>.
+            These nodes are where challenge containers will be deployed and must be reachable via SSH from the CTFd server.
+          </small>
+          <br>
+          <a href="{{ url_for('admin_docker_manager.nodes_dashboard') }}" class="btn btn-info btn-sm mb-1">Nodes Dashboard</a>
+        </div>
 
-  <button type="button" id="add-node-btn" class="btn btn-secondary btn-sm mb-1">+ Add Node</button>
-  <button id="save-btn" type="button" onclick="saveConfig()" class="btn btn-primary btn-sm mb-1">Save</button>
-  <small class="form-text text-muted">
-    Define the Docker worker nodes used by the Docker Manager. Each node should be specified in the format <code>user@host</code>. 
-    These nodes are where challenge containers will be deployed and must be reachable via SSH from the CTFd server. 
-    Click the <strong>+ Add Node</strong> button to add a new node
-  </small>
-  <br>
-  <a href="{{ url_for('admin_docker_manager.nodes_dashboard') }}" class="btn btn-info btn-sm mb-1">Nodes Dashboard</a>
-</div>
-      <br>
-      <h2>Configuration</h2>
-      <hr>
-<table class="table table-striped">
-  <tbody>
-<tr>
-  <td><strong>Registry URL</strong></td>
-  <td>
-    <input type="text" name="docker_registry_url"
-           value="{{ values.REGISTRY_URL }}"
-           class="form-control">
-    <small class="form-text text-muted">
-      Docker registry endpoint (e.g. ghcr.io, registry.hackthebox.com).
-    </small>
-  </td>
-</tr>
+        <br>
+        <h2>Configuration</h2>
+        <hr>
 
-<tr>
-  <td><strong>Registry Username</strong></td>
-  <td>
-    <input type="text" name="docker_registry_user"
-           value="{{ values.REGISTRY_USER }}"
-           class="form-control">
-  </td>
-</tr>
+        <table class="table table-striped">
+          <tbody>
 
-<tr>
-  <td><strong>Registry Password</strong></td>
-  <td>
-    <input type="password" name="docker_registry_password"
-           value="{{ values.REGISTRY_PASSWORD }}"
-           class="form-control">
-  </td>
-</tr>
+            <tr>
+              <td><strong>Registry URL</strong></td>
+              <td>
+                <input type="text" name="docker_registry_url"
+                       value="{{ values.REGISTRY_URL }}"
+                       class="form-control">
+                <small class="form-text text-muted">
+                  Docker registry endpoint (e.g. <code>https://10.20.100.22:5000</code>, <code>ghcr.io</code>).
+                  Include <code>https://</code> for TLS registries.
+                </small>
+              </td>
+            </tr>
 
-<tr>
-  <td><strong>Registry Namespace</strong></td>
-  <td>
-    <input type="text" name="docker_registry_namespace"
-           value="{{ values.REGISTRY_NAMESPACE }}"
-           class="form-control">
-    <small class="form-text text-muted">
-      Default image namespace (e.g. teamname, ctfd, challenges).
-    </small>
-  </td>
-</tr>
-  <tr>
-    <td><strong>Max Active Containers Per Group</strong></td>
-    <td>
-      <input type="number" name="docker_max_active_containers_per_group"
-             value="{{ values.MAX_ACTIVE_CONTAINERS_PER_GROUP }}"
-             class="form-control" min="0">
-      <small class="form-text text-muted">
-        Maximum number of running containers allowed per team/group.
-      </small>
-    </td>
-  </tr>
+            <tr>
+              <td><strong>Registry Username</strong></td>
+              <td>
+                <input type="text" name="docker_registry_user"
+                       value="{{ values.REGISTRY_USER }}"
+                       class="form-control">
+              </td>
+            </tr>
 
-  <tr>
-  <td><strong>Container Suspension Interval</strong></td>
-  <td>
-    <div class="input-group">
-      <input
-        type="number"
-        step="1"
-        class="form-control minutes-field"
-        data-seconds-field="docker_container_suspension_interval"
-        value="{{ (values.CONTAINER_SUSPENSION_INTERVAL // 60) if values.CONTAINER_SUSPENSION_INTERVAL else 0 }}"
-        min="0"
-      >
-      <span class="input-group-text">min</span>
-    </div>
-    <small class="form-text text-muted">
-      Time of inactivity before a container is automatically suspended.
-    </small>
-  </td>
-</tr>
+            <tr>
+              <td><strong>Registry Password</strong></td>
+              <td>
+                <input type="password" name="docker_registry_password"
+                       value="{{ values.REGISTRY_PASSWORD }}"
+                       class="form-control">
+              </td>
+            </tr>
 
+            <tr>
+              <td><strong>Registry Namespace</strong></td>
+              <td>
+                <input type="text" name="docker_registry_namespace"
+                       value="{{ values.REGISTRY_NAMESPACE }}"
+                       class="form-control">
+                <small class="form-text text-muted">
+                  Default image namespace (e.g. <code>challenges</code>).
+                </small>
+              </td>
+            </tr>
 
-  <tr>
-  <td><strong>Container Inactivity Termination</strong></td>
-  <td>
-    <div class="input-group">
-      <input
-        type="number"
-        step="1"
-        class="form-control minutes-field"
-        data-seconds-field="docker_docker_container_lifetime"
-        value="{{ (values.DOCKER_CONTAINER_LIFETIME // 60) if values.DOCKER_CONTAINER_LIFETIME else 0 }}"
-        min="0"
-      >
-      <span class="input-group-text">min</span>
-    </div>
-    <small class="form-text text-muted">
-      Time of inactivity before a container is automatically removed from the system.
-    </small>
-  </td>
-</tr>
+            <!-- ── Registry TLS Certificate ─────────────────────────── -->
+            <tr>
+              <td><strong>Registry TLS Certificate</strong></td>
+              <td>
+                {% if values.REGISTRY_CERT_PATH %}
+                  <div class="d-flex align-items-center gap-2 mb-2">
+                    <span class="badge bg-success">✓ Certificate installed</span>
+                    <code class="text-muted small">{{ values.REGISTRY_CERT_PATH }}</code>
+                    <button type="button" class="btn btn-sm btn-outline-danger"
+                            onclick="deleteCert()">Remove</button>
+                  </div>
+                {% else %}
+                  <div class="alert alert-warning py-2 mb-2" id="no-cert-warning">
+                    No certificate configured — self-signed registries will fail TLS verification.
+                  </div>
+                {% endif %}
 
+                <div class="d-flex align-items-center gap-2 mb-1" style="max-width:480px;">
+                  <input type="file" class="form-control" id="cert-file-input" accept=".crt,.pem,.cer">
+                  <button type="button" class="btn btn-secondary btn-sm" id="cert-upload-btn"
+                          onclick="uploadCert()" disabled>Upload</button>
+                </div>
+                <div id="cert-upload-status" class="mt-1"></div>
+                <small class="form-text text-muted">
+                  Upload the CA certificate (<code>.crt</code> / <code>.pem</code>) for a self-signed registry.
+                  It will be distributed to all nodes automatically before each image pull.
+                </small>
+              </td>
+            </tr>
+            <!-- ──────────────────────────────────────────────────────── -->
 
-  <tr>
-    <td><strong>Memory Limit Per Container</strong></td>
-    <td>
-      <div class="input-group">
-        <input type="number"
-               step="1"
-               class="form-control memory-mb"
-               data-bytes-field="docker_mem_limit_per_container"
-               value="{{ (values.MEM_LIMIT_PER_CONTAINER // (1024*1024)) if values.MEM_LIMIT_PER_CONTAINER is not none else 0 }}"
-               min="0">
-        <span class="input-group-text">MB</span>
-      </div>
-      <small class="form-text text-muted">
-        Maximum RAM available to each container.
-      </small>
-    </td>
-  </tr>
+            <tr>
+              <td><strong>Max Active Containers Per Group</strong></td>
+              <td>
+                <input type="number" name="docker_max_active_containers_per_group"
+                       value="{{ values.MAX_ACTIVE_CONTAINERS_PER_GROUP }}"
+                       class="form-control" min="0">
+                <small class="form-text text-muted">
+                  Maximum number of running containers allowed per team/group.
+                </small>
+              </td>
+            </tr>
 
-  <tr>
-    <td><strong>Reserved System Memory</strong></td>
-    <td>
-      <div class="input-group">
-        <input type="number"
-               step="1"
-               class="form-control memory-mb"
-               data-bytes-field="docker_max_spare_ram"
-               value="{{ (values.MAX_SPARE_RAM // (1024*1024)) if values.MAX_SPARE_RAM is not none else 0 }}"
-               min="0">
-        <span class="input-group-text">MB</span>
-      </div>
-      <small class="form-text text-muted">
-        Amount of RAM to keep free to prevent system exhaustion.
-      </small>
-    </td>
-  </tr>
+            <tr>
+              <td><strong>Container Suspension Interval</strong></td>
+              <td>
+                <div class="input-group">
+                  <input type="number" step="1" class="form-control minutes-field"
+                         data-seconds-field="docker_container_suspension_interval"
+                         value="{{ (values.CONTAINER_SUSPENSION_INTERVAL // 60) if values.CONTAINER_SUSPENSION_INTERVAL else 0 }}"
+                         min="0">
+                  <span class="input-group-text">min</span>
+                </div>
+                <small class="form-text text-muted">
+                  Time of inactivity before a container is automatically suspended.
+                </small>
+              </td>
+            </tr>
 
-  <tr>
-    <td><strong>CPU Cores Per Container</strong></td>
-    <td>
-      <div class="input-group">
-        <input type="number"
-               step="0.1"
-               class="form-control cpu-cores"
-               data-quota-field="docker_docker_container_cpu_quota"
-               value="{{ ((values.DOCKER_CONTAINER_CPU_QUOTA / 100000) | round(2, 'common')) if values.DOCKER_CONTAINER_CPU_QUOTA is not none else 0 }}"
-               min="0">
-        <span class="input-group-text">cores</span>
-      </div>
-      <small class="form-text text-muted">
-        CPU allocation per container (e.g., 0.5 = half a core, 1 = full core).
-      </small>
-    </td>
-  </tr>
+            <tr>
+              <td><strong>Container Inactivity Termination</strong></td>
+              <td>
+                <div class="input-group">
+                  <input type="number" step="1" class="form-control minutes-field"
+                         data-seconds-field="docker_docker_container_lifetime"
+                         value="{{ (values.DOCKER_CONTAINER_LIFETIME // 60) if values.DOCKER_CONTAINER_LIFETIME else 0 }}"
+                         min="0">
+                  <span class="input-group-text">min</span>
+                </div>
+                <small class="form-text text-muted">
+                  Time of inactivity before a container is automatically removed.
+                </small>
+              </td>
+            </tr>
 
-  <tr>
-    <td><strong>Docker Network Name</strong></td>
-    <td>
-      <input type="text" name="docker_docker_container_network"
-             value="{{ values.DOCKER_CONTAINER_NETWORK }}"
-             class="form-control">
-      <small class="form-text text-muted">
-        Docker network used to attach challenge containers.
-      </small>
-    </td>
-  </tr>
+            <tr>
+              <td><strong>Memory Limit Per Container</strong></td>
+              <td>
+                <div class="input-group">
+                  <input type="number" step="1" class="form-control memory-mb"
+                         data-bytes-field="docker_mem_limit_per_container"
+                         value="{{ (values.MEM_LIMIT_PER_CONTAINER // (1024*1024)) if values.MEM_LIMIT_PER_CONTAINER is not none else 0 }}"
+                         min="0">
+                  <span class="input-group-text">MB</span>
+                </div>
+                <small class="form-text text-muted">Maximum RAM available to each container.</small>
+              </td>
+            </tr>
 
-  <tr>
-    <td><strong>Internal Port Range Start</strong></td>
-    <td>
-      <input type="number" name="docker_internal_port_range_start"
-             value="{{ values.INTERNAL_PORT_RANGE_START }}"
-             class="form-control" min="1" max="65535">
-      <small class="form-text text-muted">
-        Starting port number for dynamically assigned internal container ports.
-      </small>
-    </td>
-  </tr>
+            <tr>
+              <td><strong>Reserved System Memory</strong></td>
+              <td>
+                <div class="input-group">
+                  <input type="number" step="1" class="form-control memory-mb"
+                         data-bytes-field="docker_max_spare_ram"
+                         value="{{ (values.MAX_SPARE_RAM // (1024*1024)) if values.MAX_SPARE_RAM is not none else 0 }}"
+                         min="0">
+                  <span class="input-group-text">MB</span>
+                </div>
+                <small class="form-text text-muted">Amount of RAM to keep free to prevent system exhaustion.</small>
+              </td>
+            </tr>
 
-  <tr>
-    <td><strong>Internal Port Range End</strong></td>
-    <td>
-      <input type="number" name="docker_internal_port_range_end"
-             value="{{ values.INTERNAL_PORT_RANGE_END }}"
-             class="form-control" min="1" max="65535">
-      <small class="form-text text-muted">
-        Ending port number for dynamically assigned internal container ports.
-      </small>
-    </td>
-  </tr>
-</tbody>
+            <tr>
+              <td><strong>CPU Cores Per Container</strong></td>
+              <td>
+                <div class="input-group">
+                  <input type="number" step="0.1" class="form-control cpu-cores"
+                         data-quota-field="docker_docker_container_cpu_quota"
+                         value="{{ ((values.DOCKER_CONTAINER_CPU_QUOTA / 100000) | round(2, 'common')) if values.DOCKER_CONTAINER_CPU_QUOTA is not none else 0 }}"
+                         min="0">
+                  <span class="input-group-text">cores</span>
+                </div>
+                <small class="form-text text-muted">CPU allocation per container (0.5 = half a core).</small>
+              </td>
+            </tr>
 
+            <tr>
+              <td><strong>Docker Network Name</strong></td>
+              <td>
+                <input type="text" name="docker_docker_container_network"
+                       value="{{ values.DOCKER_CONTAINER_NETWORK }}"
+                       class="form-control">
+                <small class="form-text text-muted">Docker network used to attach challenge containers.</small>
+              </td>
+            </tr>
+
+            <tr>
+              <td><strong>Internal Port Range Start</strong></td>
+              <td>
+                <input type="number" name="docker_internal_port_range_start"
+                       value="{{ values.INTERNAL_PORT_RANGE_START }}"
+                       class="form-control" min="1" max="65535">
+              </td>
+            </tr>
+
+            <tr>
+              <td><strong>Internal Port Range End</strong></td>
+              <td>
+                <input type="number" name="docker_internal_port_range_end"
+                       value="{{ values.INTERNAL_PORT_RANGE_END }}"
+                       class="form-control" min="1" max="65535">
+              </td>
+            </tr>
+
+          </tbody>
         </table>
 
         <div class="mb-3">
-          <button id="save-btn" type="button" onclick="saveConfig()" class="btn btn-primary">Save</button>
+          <button id="save-btn-bottom" type="button" onclick="saveConfig()" class="btn btn-primary">Save</button>
           <span id="save-status" style="margin-left:12px;"></span>
         </div>
       </form>
@@ -241,108 +245,140 @@
 </div>
 
 <script>
-/* Constants */
-const MB = 1024 * 1024;
-const CPU_PERIOD = 100000; // Docker default period used to compute quota
-const MINUTE = 60;
+const MB         = 1024 * 1024;
+const CPU_PERIOD = 100000;
+const MINUTE     = 60;
+const CSRF       = "{{ Session.nonce }}";
 
-// Add new worker node input
+/* ── Worker nodes ────────────────────────────────────────────────────── */
 document.getElementById('add-node-btn').addEventListener('click', () => {
   const container = document.getElementById('worker-nodes-list');
-
   const div = document.createElement('div');
   div.className = 'input-group mb-1 worker-node-entry';
+  div.style.maxWidth = '50%';
   div.innerHTML = `
     <input type="text" class="form-control worker-node-input" placeholder="user@host">
     <button type="button" class="btn btn-danger remove-node-btn">X</button>
   `;
   container.appendChild(div);
-
-  // attach remove handler
   div.querySelector('.remove-node-btn').addEventListener('click', () => div.remove());
 });
 
-// Attach remove handlers to existing nodes
 document.querySelectorAll('.remove-node-btn').forEach(btn => {
-  btn.addEventListener('click', e => {
-    e.target.closest('.worker-node-entry').remove();
-  });
+  btn.addEventListener('click', e => e.target.closest('.worker-node-entry').remove());
 });
 
+/* ── Certificate upload ──────────────────────────────────────────────── */
+const certInput  = document.getElementById('cert-file-input');
+const certBtn    = document.getElementById('cert-upload-btn');
+const certStatus = document.getElementById('cert-upload-status');
 
+function setCertStatus(msg, type) {
+  certStatus.innerHTML = `<small class="text-${type}">${msg}</small>`;
+}
+
+certInput?.addEventListener('change', () => {
+  certBtn.disabled = !certInput.files.length;
+  certStatus.innerHTML = '';
+});
+
+function uploadCert() {
+  const file = certInput.files[0];
+  if (!file) return;
+
+  certBtn.disabled = true;
+  setCertStatus('Uploading…', 'info');
+
+  const fd = new FormData();
+  fd.append('cert', file);
+  fd.append('nonce', CSRF);
+
+  fetch("{{ url_for('admin_docker_manager.upload_registry_cert') }}", {
+    method: 'POST',
+    headers: { 'CSRF-Token': CSRF, 'X-CSRFToken': CSRF },
+    body: fd,
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      setCertStatus('✓ Certificate uploaded. Reloading…', 'success');
+      setTimeout(() => location.reload(), 800);
+    } else {
+      setCertStatus('Failed: ' + (data.error || 'unknown error'), 'danger');
+      certBtn.disabled = false;
+    }
+  })
+  .catch(err => {
+    setCertStatus('Network error: ' + err, 'danger');
+    certBtn.disabled = false;
+  });
+}
+
+function deleteCert() {
+  if (!confirm('Remove the registry TLS certificate?')) return;
+  fetch("{{ url_for('admin_docker_manager.delete_registry_cert') }}", {
+    method: 'POST',
+    headers: { 'CSRF-Token': "{{ Session.nonce }}", 'Content-Type': 'application/json' },
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) location.reload();
+    else alert('Failed: ' + (data.error || 'unknown'));
+  });
+}
+
+/* ── Save config ─────────────────────────────────────────────────────── */
 async function saveConfig() {
-  const btn = document.getElementById('save-btn');
+  const btns   = document.querySelectorAll('#save-btn, #save-btn-bottom');
   const status = document.getElementById('save-status');
 
-  btn.disabled = true;
-  status.textContent = 'Saving...';
+  btns.forEach(b => b.disabled = true);
+  status.textContent = 'Saving…';
 
   try {
     const data = {};
 
-    // collect inputs which already have a name (normal fields)
     document.querySelectorAll('input[name]').forEach(input => {
       data[input.name] = input.value;
     });
 
-    // Memory inputs: MB -> bytes, data-bytes-field contains target key
     document.querySelectorAll('.memory-mb').forEach(input => {
-      const field = input.dataset.bytesField;
-      const mb = parseInt(input.value || 0, 10);
-      data[field] = Math.max(0, mb) * MB;
+      data[input.dataset.bytesField] = Math.max(0, parseInt(input.value || 0)) * MB;
     });
 
-    // CPU cores inputs: cores -> quota
     document.querySelectorAll('.cpu-cores').forEach(input => {
-      const field = input.dataset.quotaField;
-      const cores = parseFloat(input.value || 0);
-      // clamp negative to 0
-      const quota = Math.round(Math.max(0, cores) * CPU_PERIOD);
-      data[field] = quota;
+      data[input.dataset.quotaField] = Math.round(Math.max(0, parseFloat(input.value || 0)) * CPU_PERIOD);
     });
 
-    // Minutes inputs: minutes -> seconds
     document.querySelectorAll('.minutes-field').forEach(input => {
-      const field = input.dataset.secondsField;
-      const minutes = parseInt(input.value || 0, 10);
-      data[field] = Math.max(0, minutes) * MINUTE;
+      data[input.dataset.secondsField] = Math.max(0, parseInt(input.value || 0)) * MINUTE;
     });
 
-    // Worker nodes: collect from all dynamic inputs
     const workerNodes = [];
     document.querySelectorAll('.worker-node-input').forEach(input => {
       const val = input.value.trim();
       if (val) workerNodes.push(val);
-  });
-data['docker_worker_nodes'] = workerNodes;
-
-
-
+    });
+    data['docker_worker_nodes'] = workerNodes;
 
     const resp = await fetch("{{ url_for('admin_docker_manager.save_config') }}", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "CSRF-Token": "{{ Session.nonce }}"
-      },
-      body: JSON.stringify(data)
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CSRF-Token': "{{ Session.nonce }}" },
+      body: JSON.stringify(data),
     });
 
     const result = await resp.json();
-
-    if (result && result.success) {
+    if (result?.success) {
       status.textContent = 'Saved.';
-      // small delay to let user see message, then reload
       setTimeout(() => location.reload(), 600);
     } else {
-      const err = result && result.error ? result.error : 'Unknown error';
+      alert('Error saving settings: ' + (result?.error || 'Unknown error'));
+      btns.forEach(b => b.disabled = false);
       status.textContent = '';
-      alert('Error saving settings: ' + err);
-      btn.disabled = false;
     }
   } catch (e) {
     alert('Network error: ' + e);
-    btn.disabled = false;
+    btns.forEach(b => b.disabled = false);
     status.textContent = '';
   }
 }

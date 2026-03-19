@@ -49,7 +49,17 @@ chmod 700 .
 chmod 600 id_ed25519
 chmod 644 id_ed25519.pub
 ```
+### On nodes
 ```bash
 ssh-copy-id -i id_ed25519.pub user@ip
 ```
-
+```
+cat << 'EOF' | sudo tee /etc/sudoers.d/ctfd-cert
+<username> ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/docker/certs.d/*
+<username> ALL=(ALL) NOPASSWD: /bin/cp /tmp/ctfd_ca_*.crt /etc/docker/certs.d/*/ca.crt
+<username> ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/docker/certs.d/*/ca.crt
+EOF
+sudo chmod 440 /etc/sudoers.d/ctfd-cert
+sudo usermod -aG docker <username>
+```
+Replace `<username>` with the SSH user configured in your worker nodes

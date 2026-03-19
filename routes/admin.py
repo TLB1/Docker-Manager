@@ -1,5 +1,5 @@
 
-from flask import Blueprint, abort, render_template, request, current_app, redirect, url_for
+from flask import Blueprint, abort, render_template, request, current_app, redirect, url_for, jsonify
 from CTFd.utils.decorators import admins_only
 
 from ..core.manager import DockerManager
@@ -16,7 +16,79 @@ admin_docker = Blueprint(
     static_folder=os.path.join(BASE_DIR, "assets"),
 )
 
-
+def _cert_file() -> str:
+    from CTFd.utils.uploads import get_uploader
+    try:
+        # Prefer CTFd's configured upload path
+        base = current_app.config.get("UPLOAD_FOLDER", "/var/uploads")
+    except RuntimeError:
+        base = "/var/uploads"
+    cert_dir = os.path.join(base, "docker_registry")
+    os.makedirs(cert_dir, exist_ok=True)
+    return os.path.join(cert_dir, "ca.crt")
+ 
+ 
+@admin_docker.route("/admin/docker/registry/cert", methods=["POST"])
+@admins_only
+def upload_registry_cert():
+    """
+    Accept a PEM/CRT file upload, save it to CERT_FILE, and persist the
+    path in RuntimeConfig so RegistryManager picks it up immediately
+    (no restart required).
+    """
+    if "cert" not in request.files:
+        return jsonify({"success": False, "error": "No file provided"}), 400
+ 
+    f = request.files["cert"]
+    if not f.filename:
+        return jsonify({"success": False, "error": "Empty filename"}), 400
+ 
+    # Basic sanity — must look like a PEM cert
+    cert_bytes = f.read()
+    if b"-----BEGIN CERTIFICATE-----" not in cert_bytes:
+        return jsonify({"success": False, "error": "File does not appear to be a PEM certificate"}), 400
+ 
+    cert_file = _cert_file()
+    try:
+        with open(cert_file, "wb") as out:
+            out.write(cert_bytes)
+    except Exception as e:
+        current_app.logger.error(f"[DockerManager] Failed to save registry cert: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+ 
+    # Persist path in config (updates the live RuntimeConfig + DB key)
+    _set_config("REGISTRY_CERT_PATH", cert_file)
+    RuntimeConfig.REGISTRY_CERT_PATH = cert_file
+ 
+    current_app.logger.info(f"[DockerManager] Registry cert saved to {cert_file}")
+    return jsonify({"success": True, "path": cert_file})
+ 
+ 
+@admin_docker.route("/admin/docker/registry/cert/delete", methods=["POST"])
+@admins_only
+def delete_registry_cert():
+    """Remove the stored registry cert and clear the config key."""
+    path = getattr(RuntimeConfig, "REGISTRY_CERT_PATH", None) or _get_cert_path()
+    if path and os.path.isfile(path):
+        try:
+            os.unlink(path)
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+ 
+    _set_config("REGISTRY_CERT_PATH", "")
+    RuntimeConfig.REGISTRY_CERT_PATH = None
+ 
+    return jsonify({"success": True})
+ 
+ 
+def _set_config(key: str, value: str):
+    """
+    Persist a config value the same way your existing save_config endpoint does.
+    Replace this with however your plugin writes to the CTFd config store.
+    """
+    from CTFd.models import db
+    from CTFd.utils import set_config as ctfd_set_config
+    ctfd_set_config(f"docker_{key.lower()}", value)
 
 @admin_docker.route("/admin/docker_manager", methods=["GET"])
 @admins_only

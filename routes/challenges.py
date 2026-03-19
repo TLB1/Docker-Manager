@@ -37,6 +37,14 @@ def get_team_or_user():
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _strip_scheme(image: str) -> str:
+    """Remove http:// or https:// from an image reference — Docker never accepts a scheme."""
+    for scheme in ("https://", "http://"):
+        if image.startswith(scheme):
+            return image[len(scheme):]
+    return image
+
+
 def _resolve_image_for_config(config):
     """Return the docker image tag/name for a DockerContainerConfig row."""
     if config.docker_image_filename:
@@ -44,7 +52,9 @@ def _resolve_image_for_config(config):
         manager = current_app.docker_manager
         return manager._get_image_from_tar(tar_path), tar_path
     if config.docker_image_name:
-        return config.docker_image_name, None
+        # Strip any accidental scheme stored in the DB — Docker image refs
+        # must be bare host:port/repo:tag with no http:// / https:// prefix.
+        return _strip_scheme(config.docker_image_name), None
     return None, None
 
 
@@ -66,6 +76,14 @@ def _start_all_containers(manager, actor_name, challenge_id, configs):
             except Exception as e:
                 current_app.logger.warning(
                     f"[DockerImageChallenge] Image sync warning for config {cfg.id}: {e}"
+                )
+        elif image:
+            # Registry / named image — ensure every node has pulled it
+            try:
+                manager.sync_registry_image(image)
+            except Exception as e:
+                current_app.logger.warning(
+                    f"[DockerImageChallenge] Registry image sync warning for config {cfg.id}: {e}"
                 )
 
         token = manager.create_container(
@@ -488,38 +506,59 @@ def serve_docker_image(filename):
 @admins_only
 def admin_list_registry_images():
     """
-    Return all Docker images available on every node, deduplicated by tag.
-    Each entry: { tag, id, size_mb, node }
-    Untagged/intermediate images are skipped.
+    Return all available Docker images.
+
+    Strategy:
+      1. Ask the RegistryManager for images from the private registry
+         (queries the Registry HTTP API v2 — no Docker daemon needed).
+      2. If the registry is not configured or returns nothing, fall back
+         to listing images cached locally on each Docker node.
+
+    Each entry always contains at least: { tag, source }
+    Registry entries also have: { repo, short_tag }
+    Node-local entries also have: { id, size_mb, node }
     """
     manager = current_app.docker_manager
     if not manager:
         return jsonify({"success": False, "error": "Docker manager not configured"}), 500
 
-    seen: set = set()
-    images = []
+    # ── 1. Try the private registry ──────────────────────────────────
+    registry = manager.registry
+    images   = []
 
-    for node in manager.nodes:
+    if registry and registry._is_configured():
         try:
-            node_images = manager._node_call(node, node.client.images.list)
-            for img in node_images:
-                for tag in (img.tags or []):
-                    if tag in seen:
-                        continue
-                    seen.add(tag)
-                    images.append({
-                        "tag":     tag,
-                        "id":      img.short_id,
-                        "size_mb": round(img.attrs.get("Size", 0) / 1024 / 1024, 1),
-                        "node":    node.address,
-                    })
-        except Exception as e:
+            images = registry.list_images()
+        except Exception as exc:
             current_app.logger.warning(
-                f"[DockerImageChallenge] Could not list images on {node}: {e}"
+                f"[DockerImageChallenge] Registry listing failed, falling back to nodes: {exc}"
             )
 
-    images.sort(key=lambda x: x["tag"])
-    return jsonify({"success": True, "images": images})
+    # ── 2. Fall back to node-local images ────────────────────────────
+    if not images:
+        seen: set = set()
+        for node in manager.nodes:
+            try:
+                node_images = manager._node_call(node, node.client.images.list)
+                for img in node_images:
+                    for tag in (img.tags or []):
+                        if tag in seen:
+                            continue
+                        seen.add(tag)
+                        images.append({
+                            "tag":     tag,
+                            "id":      img.short_id,
+                            "size_mb": round(img.attrs.get("Size", 0) / 1024 / 1024, 1),
+                            "node":    node.address,
+                            "source":  "node",
+                        })
+            except Exception as exc:
+                current_app.logger.warning(
+                    f"[DockerImageChallenge] Could not list images on {node}: {exc}"
+                )
+        images.sort(key=lambda x: x["tag"])
+
+    return jsonify({"success": True, "images": images, "source": images[0]["source"] if images else "none"})
 
 
 # ---------------------------------------------------------------------------

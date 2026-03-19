@@ -52,6 +52,11 @@ def _make_docker_client_over_ssh(ssh_pool: SSHPool, node: Node) -> DockerClient:
             )
             return chan
 
+    # Use unix socket tunnelled over SSH — the standard way Docker SDK does it
+    # but reusing our transport.  We need a plain socket-like object.
+    # The simplest approach: use the SDK's own ssh:// URL but override
+    # paramiko usage to call our pool.
+
     # Simplest correct approach: just create a new DockerClient via ssh://
     # but wrap _query calls with reconnect.  The adapter above is complex;
     # for now return a fresh client and let the caller handle ChannelException.
@@ -453,6 +458,154 @@ class DockerManager:
                 shell=True, check=True, stdout=subprocess.DEVNULL,
             )
         print(f"{image} synced to all nodes.")
+
+    def sync_registry_image(self, image: str):
+        """
+        Ensure every node has pulled `image` from the private registry.
+        `image` must be a bare reference (host:port/repo:tag) — any accidental
+        http:// / https:// prefix is stripped here before use.
+
+        For each node:
+          1. docker login  (using registry credentials from RegistryManager)
+          2. docker pull   (skipped if the image is already present)
+
+        Runs nodes in parallel, matching sync_tar_image behaviour.
+        Raises RuntimeError if *all* nodes fail; partial failure is logged
+        but not fatal so the container can still start on a healthy node.
+        """
+        registry = self.registry
+
+        # Strip any scheme — Docker image refs never include http:// / https://
+        for _scheme in ("https://", "http://"):
+            if image.startswith(_scheme):
+                image = image[len(_scheme):]
+                break
+
+        def pull_on_node(node: Node) -> bool:
+            import logging
+            log = logging.getLogger(__name__)
+            ssh_prefix = f"ssh {node.name}@{node.address}"
+
+            # Strip scheme — docker login / certs.d expect bare host:port
+            registry_host = registry.registry
+            for scheme in ("https://", "http://"):
+                if registry_host.startswith(scheme):
+                    registry_host = registry_host[len(scheme):]
+                    break
+            registry_host = registry_host.rstrip("/")
+
+            # ── 1. Install CA cert into /etc/docker/certs.d/ ────────
+            # Docker reads this directory at pull time — no daemon restart
+            # needed. We scp to /tmp first (no privileges), then move it
+            # into place. Tries direct write first (SSH as root), then sudo.
+            cert_path = getattr(RuntimeConfig, 'REGISTRY_CERT_PATH', None)
+            certs_dir = f"/etc/docker/certs.d/{registry_host}"
+            dest_cert = f"{certs_dir}/ca.crt"
+
+            if cert_path and os.path.isfile(cert_path):
+                tmp_cert = f"/tmp/ctfd_ca_{registry_host.replace(':', '_').replace('.', '_')}.crt"
+
+                # scp to /tmp — always works, no privileges needed
+                r = subprocess.run(
+                    f"scp {cert_path} {node.name}@{node.address}:{tmp_cert}",
+                    shell=True, capture_output=True,
+                )
+                if r.returncode != 0:
+                    log.warning(
+                        f"[DockerManager] scp cert to {node.address} failed: "
+                        f"{r.stderr.decode().strip()}"
+                    )
+                else:
+                    # Try direct write first (works if SSH user is root)
+                    r = subprocess.run(
+                        f"{ssh_prefix} 'mkdir -p {certs_dir} && cp {tmp_cert} {dest_cert} && chmod 644 {dest_cert}'",
+                        shell=True, capture_output=True,
+                    )
+                    if r.returncode == 0:
+                        print(f"{node.address:20} → CERT INSTALLED")
+                    else:
+                        # Try with minimal per-binary sudo — requires on each node:
+                        #   echo "<user> ALL=(ALL) NOPASSWD: /bin/mkdir, /bin/cp, /bin/chmod"                         #     | sudo tee /etc/sudoers.d/ctfd-cert
+                        sudo_install = (
+                            f"sudo /bin/mkdir -p {certs_dir} && "
+                            f"sudo /bin/cp {tmp_cert} {dest_cert} && "
+                            f"sudo /bin/chmod 644 {dest_cert}"
+                        )
+                        r2 = subprocess.run(
+                            f"{ssh_prefix} '{sudo_install}'",
+                            shell=True, capture_output=True,
+                        )
+                        if r2.returncode == 0:
+                            print(f"{node.address:20} → CERT INSTALLED (sudo)")
+                        else:
+                            log.error(
+                                f"[DockerManager] Cannot install cert on {node.address}."
+                            )
+                            return False
+
+            # ── 2. Login ──────────────────────────────────────────────
+            if registry._is_configured() and registry.user and registry.password:
+                login_cmd = (
+                    f"{ssh_prefix} docker login {registry_host}"
+                    f" --username {registry.user}"
+                    f" --password-stdin"
+                )
+                try:
+                    result = subprocess.run(
+                        login_cmd,
+                        input=registry.password.encode(),
+                        shell=True,
+                        capture_output=True,
+                    )
+                    if result.returncode != 0:
+                        log.warning(
+                            f"[DockerManager] Registry login failed on {node.address}: "
+                            f"{result.stderr.decode().strip()}"
+                        )
+                except Exception as e:
+                    log.warning(f"[DockerManager] Registry login error on {node.address}: {e}")
+
+            # ── 3. Check if image already present ─────────────────────
+            check = subprocess.run(
+                f"{ssh_prefix} docker image inspect {image}",
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if check.returncode == 0:
+                print(f"{node.address:20} → ALREADY PRESENT")
+                return True
+
+            # ── 4. Pull ───────────────────────────────────────────────
+            print(f"Pulling {image} on {node.address}…")
+            r = subprocess.run(
+                f"{ssh_prefix} docker pull {image}",
+                shell=True,
+                capture_output=True,
+            )
+            if r.returncode == 0:
+                print(f"{node.address:20} → PULLED")
+                return True
+            else:
+                log.warning(
+                    f"[DockerManager] Pull failed on {node.address}: "
+                    f"{r.stderr.decode().strip()}"
+                )
+                print(f"{node.address:20} → FAILED")
+                return False
+
+        print(f"Syncing registry image: {image}")
+        with ThreadPoolExecutor(max_workers=len(self.nodes)) as executor:
+            results = [
+                f.result()
+                for f in as_completed(executor.submit(pull_on_node, n) for n in self.nodes)
+            ]
+
+        if not any(results):
+            raise RuntimeError(f"Failed to pull {image} on any node")
+
+        status = "pulled on all nodes." if all(results) else "pulled with errors on some nodes."
+        print(f"{image} {status}----------------")
 
     def sync_tar_image(self, tar_path: str):
         if not os.path.isfile(tar_path):

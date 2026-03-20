@@ -12,6 +12,7 @@ from CTFd.models import db, Challenges
 from CTFd.utils.decorators import admins_only
 from CTFd.utils.user import get_current_team, get_current_user
 from ..core.labels import DockerLabels
+from ..core.config import RuntimeConfig
 
 PLUGIN_NAME = "Docker-Manager"
 MAX_IMAGE_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
@@ -93,7 +94,7 @@ def _start_all_containers(manager, actor_name, challenge_id, configs):
             container_port=cfg.container_port or 80,
             container_index=cfg.container_index,   # passed as an extra label
         )
-        url = f"http://{token}.challenges.ctf:8008/"
+        url = f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/"
         results.append({
             "index": cfg.container_index,
             "label": cfg.label or f"Container {cfg.container_index}",
@@ -139,7 +140,7 @@ def _container_status_list(manager, actor_name, challenge_id, configs):
                 "exists": True,
                 "status": container.status,
                 "token": token,
-                "url": f"http://{token}.challenges.ctf:8008/",
+                "url": f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/",
             })
         else:
             results.append({
@@ -263,7 +264,7 @@ def api_token_status(token):
     if not container:
         return jsonify({"success": True, "exists": False})
 
-    url = f"http://{token}.challenges.ctf:8008/"
+    url = f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/"
     return jsonify({
         "success": True,
         "exists": True,
@@ -286,7 +287,7 @@ def api_token_resume(token):
 
     try:
         ok = manager.resume_container(token)
-        url = f"http://{token}.challenges.ctf:8008/"
+        url = f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/"
         return jsonify({"success": True, "resumed": ok, "token": token, "url": url})
     except Exception as e:
         current_app.logger.error(f"[DockerImageChallenge] Failed to resume container by token: {e}")

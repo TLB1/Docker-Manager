@@ -13,7 +13,7 @@ from CTFd.utils.decorators import admins_only
 from CTFd.utils.user import get_current_team, get_current_user
 from ..core.labels import DockerLabels
 
-PLUGIN_NAME = "my-plugin"
+PLUGIN_NAME = "Docker-Manager"
 MAX_IMAGE_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 
 
@@ -658,7 +658,7 @@ class DockerContainerConfig(db.Model):
 
 
 class DockerImageChallengeModel(Challenges):
-    __mapper_args__ = {"polymorphic_identity": "docker_image"}
+    __mapper_args__ = {"polymorphic_identity": "docker"}
 
     id = db.Column(
         db.Integer,
@@ -678,7 +678,7 @@ class DockerImageChallengeModel(Challenges):
 # ---------------------------------------------------------------------------
 
 class DockerImageChallenge(BaseChallenge):
-    id = "docker_image"
+    id = "docker"
     name = "Docker Image"
     templates = {
         "create": f"/plugins/{PLUGIN_NAME}/assets/docker-challenge/create.html",
@@ -816,6 +816,6 @@ def load(app):
     app.register_blueprint(bp)
     app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_SIZE
     with app.app_context():
-        CHALLENGE_CLASSES["docker_image"] = DockerImageChallenge
+        CHALLENGE_CLASSES["docker"] = DockerImageChallenge
         db.create_all()
     app.logger.info("✓ Docker Image Challenge plugin loaded")

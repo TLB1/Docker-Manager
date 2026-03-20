@@ -35,7 +35,7 @@ def load(app):
     if routes_load is None:
         raise RuntimeError("Plugin loader not available: failed to import routes.admin")
 
-    register_plugin_assets_directory(app, base_path='/plugins/my-plugin/assets/')
+    register_plugin_assets_directory(app, base_path='/plugins/Docker-Manager/assets/')
     challenges_load(app)
     routes_load(app)
     docker_load(app)

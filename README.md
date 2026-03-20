@@ -17,15 +17,16 @@ RUN mkdir /var/images/ && chown 1001:1001 ./CTFd/plugins/my-plugin/nginx/token_m
 Add this to the top of `docker-compose.yml`
 ```yaml
 volumes:
-  token_map_data:
+  proxy_data:
+  docker_images:
 services:
   ctfd-nginx-proxy:
     image: nginx:stable-alpine
     container_name: ctfd-nginx-proxy
     restart: unless-stopped
     volumes:
-      - ./CTFd/plugins/my-plugin/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - token_map_data:/etc/nginx/data
+      - ./CTFd/plugins/Docker-Manager/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - proxy_data:/etc/nginx/data
     ports:
       - "8008:8008"
     depends_on:
@@ -34,10 +35,11 @@ services:
 Add this to the existing ctfd service in `docker-compose.yml`
 ```yaml
     group_add:
-        - 989
+      - 989
     volumes:
-        - token_map_data:/opt/CTFd/CTFd/plugins/my-plugin/nginx/data
-        - /var/run/docker.sock:/var/run/docker.sock
+      - proxy_data:/opt/CTFd/CTFd/plugins/Docker-Manager/nginx/data
+      - docker_images:/var/images/
+      - /var/run/docker.sock:/var/run/docker.sock
 ```  
 ### SSH Keys
     

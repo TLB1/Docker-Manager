@@ -56,10 +56,10 @@ class PortsManager:
 
         config_lines.append("}")
 
-        with open("/opt/CTFd/CTFd/plugins/my-plugin/nginx/data/data_map.conf", "w") as f:
+        with open("/opt/CTFd/CTFd/plugins/Docker-Manager/nginx/data/data_map.conf", "w") as f:
             f.write("\n".join(config_lines))
 
-        with open(f"/opt/CTFd/CTFd/plugins/my-plugin/nginx/data/server_name.conf", "w") as f:
+        with open(f"/opt/CTFd/CTFd/plugins/Docker-Manager/nginx/data/server_name.conf", "w") as f:
             f.write(f"server_name *.{RuntimeConfig.CTFD_DOMAIN_NAME};\n")
 
         client = docker.from_env()

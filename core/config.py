@@ -1,5 +1,6 @@
 class RuntimeConfig:
     WORKER_NODES = []
+    CTFD_DOMAIN_NAME = "challenges.ctf"
     REGISTRY_URL = None
     REGISTRY_USER = None
     REGISTRY_PASSWORD = None

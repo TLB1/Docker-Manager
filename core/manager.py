@@ -404,7 +404,7 @@ class DockerManager:
                     team=container.labels.get(DockerLabels.TEAM),
                     token=container.labels.get(DockerLabels.TOKEN),
                     container_index=container.labels.get(DockerLabels.CONTAINER_INDEX),
-                    url=f"http://{container.labels.get(DockerLabels.TOKEN)}.challenges.ctf:8008/",
+                    url=f"http://{container.labels.get(DockerLabels.TOKEN)}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/",
                     image=container.image,
                     status=container.status,
                 ))

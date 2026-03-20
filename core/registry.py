@@ -22,12 +22,18 @@ class RegistryManager:
     def challenge_repo(self, image: str) -> str:
         return f"{self._registry_host()}/{self.namespace}/{image}"
 
+
+
     def tag_for_challenge(self, image: str) -> str:
         return f"{self.challenge_repo(image)}:latest"
+
+
 
     def _is_configured(self) -> bool:
         """Return True only when a real registry URL has been set."""
         return bool(self.registry and self.registry.strip())
+
+
 
     def _registry_host(self) -> str:
         """

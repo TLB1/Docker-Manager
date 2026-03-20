@@ -3,6 +3,7 @@ from ..core.config import RuntimeConfig
 
 RUNTIME_ATTRS = [
     "WORKER_NODES",
+    "CTFD_DOMAIN_NAME",
     "REGISTRY_URL",
     "REGISTRY_USER",
     "REGISTRY_PASSWORD",

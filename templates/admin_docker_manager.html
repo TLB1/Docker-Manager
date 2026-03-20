@@ -41,8 +41,20 @@
         <h2>Configuration</h2>
         <hr>
 
-        <table class="table table-striped">
+        <table class="table">
           <tbody>
+
+            <tr>
+              <td><strong>CTFd Domain Name</strong></td>
+              <td>
+                <input type="text" name="docker_ctfd_domain_name"
+                       value="{{ values.CTFD_DOMAIN_NAME }}"
+                       class="form-control">
+                <small class="form-text text-muted">
+                  The domain name for the CTFd instance (e.g. <code>challenges.ctf</code>).
+                </small>
+              </td>
+            </tr>
 
             <tr>
               <td><strong>Registry URL</strong></td>

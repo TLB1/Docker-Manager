@@ -9,10 +9,9 @@ git clone https://github.com/TLB1/Docker-Manager.git
 Add this at the end of the CTFd `Dockerfile` right before `USER 1001`
 ```
 RUN apt-get update && apt-get install -y openssh-client
-COPY --chown=1001:1001 ./CTFd/plugins/my-plugin/ssh/ctfd_ssh_keys /home/ctfd/.ssh/
+COPY --chown=1001:1001 ./CTFd/plugins/Docker-Manager/ssh/ctfd_ssh_keys /home/ctfd/.ssh/
 RUN mkdir -p /.ssh && chown -R 1001:1001 /home/ctfd/.ssh
-RUN chown 1001:1001 ./CTFd/plugins/my-plugin/nginx/token_map.conf
-RUN mkdir /var/images/ && chown 1001:1001 ./CTFd/plugins/my-plugin/nginx/token_map.conf /var/images/
+RUN mkdir /var/images/ && chown 1001:1001 ./CTFd/plugins/Docker-Manager/nginx/ /var/images/
 ```
 Add this to the top of `docker-compose.yml`
 ```yaml

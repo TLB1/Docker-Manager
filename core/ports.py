@@ -49,7 +49,8 @@ class PortsManager:
     def update_nginx_data(self):
         config_lines = [
             "map $host $ctfd_host {", f"    default {RuntimeConfig.CTFD_DOMAIN_NAME};", "}",
-            "map $token $backend {", "    default \"\";"]
+            "map $token $backend {", "    default \"\";"
+            ]
 
         for token, (server_url, port) in self.allocated_ports.items():
             config_lines.append(f"    {token} {server_url}:{port};")

@@ -31,7 +31,7 @@
   const CTFD_ROOT     = {{ ctfd_root|tojson }};
   const STATUS_URL    = CTFD_ROOT + "/docker/api/token/" + TOKEN + "/status";
   const RESUME_URL    = CTFD_ROOT + "/docker/api/token/" + TOKEN + "/resume";
-  const CHALLENGE_URL = "http://" + TOKEN + ".challenges.ctf:8008/";
+  const CHALLENGE_URL = "http://" + TOKEN + "." + {{ ctfd_domain|tojson }} + ":8008/";
 
   const icon         = document.getElementById("icon");
   const heading      = document.getElementById("heading");

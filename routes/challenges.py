@@ -361,6 +361,7 @@ def challenge_unavailable(token):
         "challenge_unavailable.html",
         token=token,
         ctfd_root=ctfd_root,
+        ctfd_domain=RuntimeConfig.CTFD_DOMAIN_NAME,
     )
 
 

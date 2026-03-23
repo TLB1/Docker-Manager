@@ -89,6 +89,22 @@ class DockerManager:
         self.timer_kill = RunnableTimer()
         self._node_index = 0
 
+
+
+    def update_nginx_data(self):
+        config_lines = [
+            "map $host $ctfd_host {", f"    default {RuntimeConfig.CTFD_DOMAIN_NAME};", "}",
+            ]
+
+        with open("/opt/CTFd/CTFd/plugins/Docker-Manager/nginx/data/data_map.conf", "w") as f:
+            f.write("\n".join(config_lines))
+
+        with open(f"/opt/CTFd/CTFd/plugins/Docker-Manager/nginx/data/server_name.conf", "w") as f:
+            f.write(f"server_name *.{RuntimeConfig.CTFD_DOMAIN_NAME};\n")
+
+        client = docker.from_env()
+        container = client.containers.get("ctfd-nginx-proxy")
+        container.exec_run("nginx -s reload")
     # ------------------------------------------------------------------ #
     # SSH / Docker client reconnect                                        #
     # ------------------------------------------------------------------ #

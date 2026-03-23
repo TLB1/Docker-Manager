@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from flask import Blueprint, request, jsonify, send_from_directory, current_app, render_template_string
+from flask import Blueprint, make_response, request, jsonify, send_from_directory, current_app, render_template_string
 from flask.templating import render_template
 from werkzeug.utils import secure_filename
 import os
@@ -352,6 +352,16 @@ def api_token_keepalive(token):
     except Exception:
         pass
     return "", 204
+
+@bp.route("/docker/api/token/<token>/backend")
+def get_backend(token):
+    manager = current_app.docker_manager
+    server_url, port = manager.ports_manager.allocated_ports.get(token, (None, None))
+    if not server_url:
+        return "", 404
+    response = make_response("", 200)
+    response.headers["X-Backend"] = f"{server_url}:{port}"
+    return response
 
 
 @bp.route("/challenge-unavailable/<token>")

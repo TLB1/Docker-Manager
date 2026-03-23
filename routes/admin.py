@@ -108,7 +108,7 @@ def save_config():
 
     dm = DockerManager(RuntimeConfig.WORKER_NODES)
     current_app.docker_manager = dm
-
+    dm.update_nginx_data()
     dm.delete_all()
     dm.print_nodes_table()
 
@@ -169,6 +169,7 @@ def load(app):
 
     try:
         app.docker_manager.delete_all()
+        app.docker_manager.update_nginx_data()
         app.docker_manager.print_nodes_table()
         app.docker_manager.update_nodes_details()
     except Exception:

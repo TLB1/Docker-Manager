@@ -259,11 +259,20 @@ class DockerManager:
         team_id,
         challenge_id,
         image,
+        port_mappings: list = None,
         container_port: int = 80,
         container_index: int = 0,
     ) -> str:
         """
         Spin up a single container and return its token.
+
+        port_mappings — list of {container_port, label, http} dicts from
+                        DockerContainerConfig.port_mappings.  When provided,
+                        ALL ports are bound in Docker.  Ports with http=False
+                        additionally get a CTFd-side TCP port allocated in the
+                        TCP range so the caller can configure an external proxy.
+                        Falls back to the legacy container_port parameter when
+                        port_mappings is not supplied.
 
         container_index identifies which container within a multi-container
         challenge this is (0-based).  It is stored as a Docker label so that
@@ -272,15 +281,53 @@ class DockerManager:
         if not self.can_create_container(team_id):
             raise Exception("Team container quota exceeded")
 
+        # ── Resolve port list ─────────────────────────────────────────
+        # Normalise into [{container_port, http}, ...] regardless of source.
+        if port_mappings:
+            ports_to_bind = [
+                {
+                    "container_port": int(pm["container_port"]),
+                    "http": pm.get("http", True),
+                }
+                for pm in port_mappings
+                if pm.get("container_port")
+            ]
+        else:
+            ports_to_bind = [{"container_port": container_port or 80, "http": True}]
+
+        if not ports_to_bind:
+            ports_to_bind = [{"container_port": 80, "http": True}]
+
         print("\n----------------")
         token = f"{secrets.randbits(48):08x}"
-        node = self._next_node()
-        host_port = self.ports_manager.allocate_port(token, node.address)
-        print(f"{image} [{container_index}] - {node.address}:{host_port}")
+        node  = self._next_node()
+
+        # ── Allocate node host ports for every container port ─────────
+        # Primary port (first entry) uses the plain token key so the
+        # existing nginx/backend lookup continues to work unchanged.
+        primary_cp   = ports_to_bind[0]["container_port"]
+        primary_hp   = self.ports_manager.allocate_port(token, node.address)
+        docker_ports = {f"{primary_cp}/tcp": primary_hp}
+
+        # Non-primary ports — allocate extra node host ports.
+        # TCP ports (http=False) additionally get a CTFd TCP port.
+        for pm in ports_to_bind[1:]:
+            cp = pm["container_port"]
+            hp = self.ports_manager.allocate_extra_node_port(token, cp, node.address)
+            docker_ports[f"{cp}/tcp"] = hp
+            if not pm.get("http", True):
+                self.ports_manager.allocate_tcp_port(token, cp, node.address, hp)
+
+        # Also handle the first port if it is explicitly http=False.
+        if not ports_to_bind[0].get("http", True):
+            self.ports_manager.allocate_tcp_port(
+                token, primary_cp, node.address, primary_hp
+            )
+
+        print(f"{image} [{container_index}] - {node.address} ports={list(docker_ports.values())}")
 
         try:
             # No retries — containers.run() is not idempotent.
-            # If the channel dies mid-call the container may already exist on the node.
             node.client.containers.run(
                 image=image,
                 detach=True,
@@ -293,7 +340,7 @@ class DockerManager:
                     DockerLabels.TOKEN: token,
                     DockerLabels.CONTAINER_INDEX: str(container_index),
                 },
-                ports={f"{container_port}/tcp": host_port},
+                ports=docker_ports,
             )
         except Exception as e:
             is_channel_error = isinstance(e, (ChannelException, SSHException)) or \
@@ -305,13 +352,11 @@ class DockerManager:
                     f"[DockerManager] SSH dropped during containers.run(), checking if container was created: {e}"
                 )
                 self._reconnect_node(node)
-                # Token is unique — if the container exists it was ours
                 existing = self.get_container_by_token(token)
                 if existing:
                     self.set_timers(token)
                     return token
 
-            # Either not a channel error, or container wasn't created
             self.ports_manager.release_port(token)
             raise
 

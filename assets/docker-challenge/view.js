@@ -73,13 +73,31 @@
         let bodyHtml;
         if (running) {
           const mappings = c.port_mappings || [];
-          bodyHtml = mappings.length
-            ? mappings.map(pm =>
-                `<a href="${c.url}" target="_blank" class="btn btn-sm btn-success me-1 mb-1">
-                  ${escHtml(pm.label || "Port " + pm.container_port)} ↗
-                </a>`
-              ).join("")
-            : `<a href="${c.url}" target="_blank" class="btn btn-sm btn-success">Open ↗</a>`;
+          if (mappings.length) {
+            bodyHtml = mappings.map(pm => {
+              const label = escHtml(pm.label || "Port " + pm.container_port);
+              if (pm.http === false || pm.http === "false") {
+                // TCP port — show copyable address, not a link
+                const domain = window.location.hostname.split('.').slice(-2).join('.') || window.location.hostname;
+                const addr   = pm.ctfd_tcp_port
+                  ? escHtml(`${domain}:${pm.ctfd_tcp_port}`)
+                  : escHtml(`(allocating…)`);
+                return `
+                  <span class="btn btn-sm btn-success me-1 mb-1 font-monospace"
+                        style="cursor:pointer; user-select:all;"
+                        title="TCP — click to copy"
+                        onclick="navigator.clipboard.writeText('${addr}')">
+                    ${label}: ${addr}
+                  </span>`;
+              }
+              // HTTP port — clickable link
+              return `<a href="${c.url}" target="_blank" class="btn btn-sm btn-success me-1 mb-1">
+                ${label} ↗
+              </a>`;
+            }).join("");
+          } else {
+            bodyHtml = `<a href="${c.url}" target="_blank" class="btn btn-sm btn-success">Open ↗</a>`;
+          }
         } else if (stopped) {
           bodyHtml = `<span class="text-muted small">Status: ${escHtml(c.status)}</span>`;
         } else {
@@ -88,7 +106,7 @@
         }
 
         return `
-          <div class="col-12 col-md-6">
+          <div class="col-12 col-md-12">
             <div class="card h-100 ${borderClass}">
               <div class="card-header d-flex align-items-center justify-content-between py-2">
                 <span class="fw-semibold">${escHtml(c.label)}</span>
@@ -111,7 +129,7 @@
 
     if (!exists)       setMsg("Container(s) not running");
     else if (allRun)   setMsg("Container(s) are running");
-    else if (someSus)  setMsg("Container(s) are paused");
+    else if (someSus)  setMsg("Container(s) are suspended");
   }
 
   function escHtml(str) {

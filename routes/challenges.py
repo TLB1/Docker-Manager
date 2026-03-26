@@ -91,8 +91,9 @@ def _start_all_containers(manager, actor_name, challenge_id, configs):
             actor_name,
             challenge_id,
             image,
+            port_mappings=cfg.port_mappings or None,
             container_port=cfg.container_port or 80,
-            container_index=cfg.container_index,   # passed as an extra label
+            container_index=cfg.container_index,
         )
         url = f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/"
         results.append({
@@ -133,10 +134,27 @@ def _container_status_list(manager, actor_name, challenge_id, configs):
         )
         if container:
             token = container.labels.get(DockerLabels.TOKEN)
+
+            # Enrich each port_mapping with live TCP allocation info so the
+            # frontend can display  hostname:NNNNN  for TCP ports.
+            tcp_allocs = {
+                m.container_port: m
+                for m in manager.ports_manager.get_tcp_mappings(token)
+            }
+            enriched = []
+            for pm in cfg.port_mappings:
+                pm_copy = dict(pm)
+                tcp = tcp_allocs.get(pm.get("container_port"))
+                if tcp:
+                    pm_copy["ctfd_tcp_port"] = tcp.ctfd_tcp_port
+                    pm_copy["node_addr"]     = tcp.node_addr
+                    pm_copy["node_host_port"] = tcp.node_host_port
+                enriched.append(pm_copy)
+
             results.append({
                 "index": cfg.container_index,
                 "label": cfg.label or f"Container {cfg.container_index}",
-                "port_mappings": cfg.port_mappings,
+                "port_mappings": enriched,
                 "exists": True,
                 "status": container.status,
                 "token": token,

@@ -244,6 +244,28 @@
               </td>
             </tr>
 
+            <tr>
+              <td><strong>TCP Port Range Start</strong></td>
+              <td>
+                <input type="number" name="docker_tcp_port_range_start"
+                      value="{{ values.TCP_PORT_RANGE_START }}"
+                      class="form-control" min="1024" max="65535">
+                <small class="form-text text-muted">
+                  Start of the port range opened on the CTFd host for non-HTTP (TCP) container ports.
+                </small>
+              </td>
+            </tr>
+            <tr>
+              <td><strong>TCP Port Range End</strong></td>
+              <td>
+                <input type="number" name="docker_tcp_port_range_end"
+                      value="{{ values.TCP_PORT_RANGE_END }}"
+                      class="form-control" min="1024" max="65535">
+                <small class="form-text text-muted">
+                  End of the port range opened on the CTFd host for non-HTTP (TCP) container ports.
+                </small>
+              </td>
+            </tr>
           </tbody>
         </table>
 

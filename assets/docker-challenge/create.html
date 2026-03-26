@@ -75,7 +75,7 @@
         <!-- Registry panel -->
         <div class="source-panel source-panel-registry" style="display:none;">
           <div class="d-flex align-items-center gap-2" style="max-width:420px;">
-            <select class="form-select container-image-name form-control">
+            <select class="form-select container-image-name">
               <option value="">— loading images… —</option>
             </select>
             <button type="button" class="btn btn-sm btn-outline-secondary registry-refresh-btn"
@@ -103,11 +103,18 @@
 
 <!-- ─── Port row template ─────────────────────────────────────────────── -->
 <template id="port-row-tpl">
-  <div class="port-row d-flex align-items-center gap-2 mb-2">
+  <div class="port-row d-flex align-items-center gap-2 mb-2 flex-wrap">
     <input type="number" class="form-control port-number"
            placeholder="Port" min="1" max="65535" style="max-width:110px;">
     <input type="text" class="form-control port-label"
-           placeholder="Label  (e.g. HTTP, SSH)" style="max-width:220px;">
+           placeholder="Label (e.g. HTTP, Shell)" style="max-width:200px;">
+    <div class="btn-group btn-group-sm" role="group" title="Protocol type">
+      <button type="button" class="btn btn-outline-secondary port-proto-btn active"
+              data-proto="http">HTTP</button>
+      <button type="button" class="btn btn-outline-secondary port-proto-btn"
+              data-proto="tcp">TCP</button>
+    </div>
+    <input type="hidden" class="port-http-value" value="true">
     <button type="button" class="btn btn-sm btn-outline-danger remove-port-btn">✕</button>
   </div>
 </template>
@@ -180,6 +187,7 @@
       const portRows = [...card.querySelectorAll('.port-row')].map(row => ({
         container_port: parseInt(row.querySelector('.port-number').value, 10) || null,
         label:          row.querySelector('.port-label').value.trim() || null,
+        http:           row.querySelector('.port-http-value').value !== 'false',
       })).filter(p => p.container_port);
 
       return {
@@ -219,6 +227,16 @@
       syncJson();
     });
     row.querySelectorAll('input').forEach(el => el.addEventListener('input', syncJson));
+
+    // HTTP / TCP protocol toggle
+    row.querySelectorAll('.port-proto-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        row.querySelectorAll('.port-proto-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        row.querySelector('.port-http-value').value = btn.dataset.proto === 'http' ? 'true' : 'false';
+        syncJson();
+      });
+    });
 
     noPortsMsg.style.display = 'none';
     syncJson();

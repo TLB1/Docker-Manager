@@ -79,14 +79,15 @@
               if (pm.http === false || pm.http === "false") {
                 // TCP port — show copyable address, not a link
                 const domain = window.location.hostname.split('.').slice(-2).join('.') || window.location.hostname;
-                const addr   = pm.ctfd_tcp_port
-                  ? escHtml(`${domain}:${pm.ctfd_tcp_port}`)
-                  : escHtml(`(allocating…)`);
+                const rawAddr = pm.ctfd_tcp_port
+                  ? `${domain}:${pm.ctfd_tcp_port}`
+                  : `(allocating…)`;
+                const addr = escHtml(rawAddr);
                 return `
-                  <span class="btn btn-sm btn-success me-1 mb-1 font-monospace"
+                  <span class="btn btn-sm btn-success me-1 mb-1 font-monospace docker-copy-tcp"
                         style="cursor:pointer; user-select:all;"
                         title="TCP — click to copy"
-                        onclick="navigator.clipboard.writeText('${addr}')">
+                        data-copy="${addr}">
                     ${label}: ${addr}
                   </span>`;
               }
@@ -267,6 +268,33 @@
     $(document).on("click" + NS, "#docker-resume", () => docker_resume(getChallengeId()));
     $(document).on("click" + NS, "#docker-stop",   () => docker_stop(getChallengeId()));
     $(document).on("click" + NS, "#docker-reset",  () => docker_reset(getChallengeId()));
+    $(document).on("click" + NS, ".docker-copy-tcp", function () {
+      const text = $(this).attr("data-copy");
+      if (!text || text === "(allocating…)") return;
+      const $el = $(this);
+      const flash = () => {
+        const orig = $el.text();
+        $el.text("Copied!");
+        setTimeout(() => $el.text(orig), 1500);
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(flash).catch(() => {});
+      } else {
+        // execCommand fallback: select inside the element that was clicked
+        // (it already has focus context inside the modal)
+        const el = this;
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        try {
+          const ok = document.execCommand("copy");
+          if (ok) flash();
+        } catch (_) {}
+        sel.removeAllRanges();
+      }
+    });
   }
 
   /* ─────────────────────────────────────────────────────────────────────

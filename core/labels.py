@@ -4,3 +4,4 @@ class DockerLabels:
     CHALLENGE = "ctfd-challenge-id"
     TOKEN = "ctfd-token"
     CONTAINER_INDEX = "ctfd-container-index"
+    NETWORK_ALIAS = "ctfd-network-alias"

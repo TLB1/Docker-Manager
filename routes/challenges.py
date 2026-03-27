@@ -4,6 +4,7 @@ from flask import Blueprint, make_response, request, jsonify, send_from_director
 from flask.templating import render_template
 from werkzeug.utils import secure_filename
 import os
+import re
 import uuid
 import tarfile
 
@@ -13,6 +14,7 @@ from CTFd.utils.decorators import admins_only
 from CTFd.utils.user import get_current_team, get_current_user
 from ..core.labels import DockerLabels
 from ..core.config import RuntimeConfig
+from ..core.manager import ContainerSpec
 
 PLUGIN_NAME = "Docker-Manager"
 MAX_IMAGE_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
@@ -59,13 +61,24 @@ def _resolve_image_for_config(config):
     return None, None
 
 
+def _label_to_alias(label, index: int) -> str:
+    """Convert a container label to a valid DNS network alias."""
+    if label:
+        alias = re.sub(r"[^a-z0-9-]", "-", label.lower()).strip("-")
+        if alias:
+            return alias
+    return f"container-{index}"
+
+
 def _start_all_containers(manager, actor_name, challenge_id, configs):
     """
-    Start one container per DockerContainerConfig entry.
+    Start one container per DockerContainerConfig entry on the same node,
+    all connected to the shared challenge network.
     Returns a list of dicts: [{index, label, token, url}, ...]
     Raises on first failure.
     """
-    results = []
+    # ── Sync all images first ─────────────────────────────────────────
+    resolved = []
     for cfg in configs:
         image, tar_path = _resolve_image_for_config(cfg)
         if image is None:
@@ -79,30 +92,37 @@ def _start_all_containers(manager, actor_name, challenge_id, configs):
                     f"[DockerImageChallenge] Image sync warning for config {cfg.id}: {e}"
                 )
         elif image:
-            # Registry / named image — ensure every node has pulled it
             try:
                 manager.sync_registry_image(image)
             except Exception as e:
                 current_app.logger.warning(
                     f"[DockerImageChallenge] Registry image sync warning for config {cfg.id}: {e}"
                 )
+        resolved.append((cfg, image))
 
-        token = manager.create_container(
-            actor_name,
-            challenge_id,
-            image,
-            port_mappings=cfg.port_mappings or None,
+    # ── Build one ContainerSpec per config ────────────────────────────
+    specs = [
+        ContainerSpec(
+            image=image,
+            network_alias=_label_to_alias(cfg.label, cfg.container_index),
+            port_mappings=cfg.port_mappings or [],
             container_port=cfg.container_port or 80,
-            container_index=cfg.container_index,
         )
-        url = f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/"
-        results.append({
+        for cfg, image in resolved
+    ]
+
+    # ── Start all containers in one call (same node, shared network) ──
+    tokens = manager.create_challenge_containers(actor_name, challenge_id, specs)
+
+    return [
+        {
             "index": cfg.container_index,
             "label": cfg.label or f"Container {cfg.container_index}",
             "token": token,
-            "url": url,
-        })
-    return results
+            "url": f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/",
+        }
+        for (cfg, _), token in zip(resolved, tokens)
+    ]
 
 
 def _remove_all_containers(manager, actor_name, challenge_id, configs):

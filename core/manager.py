@@ -88,6 +88,10 @@ class DockerManager:
         self.timer_timeout = RunnableTimer()
         self.timer_kill = RunnableTimer()
         self._node_index = 0
+        # Guards against concurrent syncs of the same image.
+        # Maps image key -> threading.Event that is set when the sync completes.
+        self._sync_events: dict[str, threading.Event] = {}
+        self._sync_events_lock = threading.Lock()
 
 
 
@@ -511,14 +515,44 @@ class DockerManager:
     # Image sync                                                           #
     # ------------------------------------------------------------------ #
 
+    def _acquire_sync(self, key: str) -> tuple[bool, threading.Event]:
+        """
+        Register intent to sync `key`.  Returns (proceed, event).
+        If proceed is True the caller owns the sync and must call
+        _release_sync() when done.  If False, wait on the event — a
+        concurrent sync is already running.
+        """
+        with self._sync_events_lock:
+            if key in self._sync_events:
+                return False, self._sync_events[key]
+            event = threading.Event()
+            self._sync_events[key] = event
+            return True, event
+
+    def _release_sync(self, key: str):
+        """Mark the sync for `key` as complete and wake any waiters."""
+        with self._sync_events_lock:
+            event = self._sync_events.pop(key, None)
+        if event:
+            event.set()
+
     def sync_image(self, image: str):
-        for node in self.nodes:
-            print(f"Syncing {image} → {node.address}")
-            subprocess.run(
-                f"docker save {image} | ssh {node.address} docker load",
-                shell=True, check=True, stdout=subprocess.DEVNULL,
-            )
-        print(f"{image} synced to all nodes.")
+        proceed, event = self._acquire_sync(image)
+        if not proceed:
+            import logging
+            logging.getLogger(__name__).info(f"[DockerManager] sync_image({image}): already in progress, waiting…")
+            event.wait()
+            return
+        try:
+            for node in self.nodes:
+                print(f"Syncing {image} → {node.address}")
+                subprocess.run(
+                    f"docker save {image} | ssh {node.address} docker load",
+                    shell=True, check=True, stdout=subprocess.DEVNULL,
+                )
+            print(f"{image} synced to all nodes.")
+        finally:
+            self._release_sync(image)
 
     def sync_registry_image(self, image: str):
         """
@@ -655,24 +689,42 @@ class DockerManager:
                 print(f"{node.address:20} → FAILED")
                 return False
 
-        print(f"Syncing registry image: {image}")
-        with ThreadPoolExecutor(max_workers=len(self.nodes)) as executor:
-            results = [
-                f.result()
-                for f in as_completed(executor.submit(pull_on_node, n) for n in self.nodes)
-            ]
+        proceed, event = self._acquire_sync(image)
+        if not proceed:
+            import logging
+            logging.getLogger(__name__).info(f"[DockerManager] sync_registry_image({image}): already in progress, waiting…")
+            event.wait()
+            return
 
-        if not any(results):
-            raise RuntimeError(f"Failed to pull {image} on any node")
+        try:
+            print(f"Syncing registry image: {image}")
+            with ThreadPoolExecutor(max_workers=len(self.nodes)) as executor:
+                results = [
+                    f.result()
+                    for f in as_completed(executor.submit(pull_on_node, n) for n in self.nodes)
+                ]
 
-        status = "pulled on all nodes." if all(results) else "pulled with errors on some nodes."
-        print(f"{image} {status}----------------")
+            if not any(results):
+                raise RuntimeError(f"Failed to pull {image} on any node")
+
+            status = "pulled on all nodes." if all(results) else "pulled with errors on some nodes."
+            print(f"{image} {status}----------------")
+        finally:
+            self._release_sync(image)
 
     def sync_tar_image(self, tar_path: str):
         if not os.path.isfile(tar_path):
             raise FileNotFoundError(tar_path)
 
         image = self._get_image_from_tar(tar_path)
+
+        proceed, event = self._acquire_sync(image)
+        if not proceed:
+            import logging
+            logging.getLogger(__name__).info(f"[DockerManager] sync_tar_image({image}): already in progress, waiting…")
+            event.wait()
+            return
+
         tar_name = os.path.basename(tar_path)
 
         def sync_host(node):
@@ -695,12 +747,15 @@ class DockerManager:
                 print(f"{node.address:20} → FAILED")
                 return False
 
-        print(f"\nChecking image: {image}\n")
-        with ThreadPoolExecutor(max_workers=len(self.nodes)) as executor:
-            results = [f.result() for f in as_completed(executor.submit(sync_host, n) for n in self.nodes)]
+        try:
+            print(f"\nChecking image: {image}\n")
+            with ThreadPoolExecutor(max_workers=len(self.nodes)) as executor:
+                results = [f.result() for f in as_completed(executor.submit(sync_host, n) for n in self.nodes)]
 
-        status = "synced to all nodes." if all(results) else "sync completed with errors."
-        print(f"\n{image} {status}\n----------------")
+            status = "synced to all nodes." if all(results) else "sync completed with errors."
+            print(f"\n{image} {status}\n----------------")
+        finally:
+            self._release_sync(image)
 
     def _get_image_from_tar(self, tar_path: str) -> str:
         with tarfile.open(tar_path, "r") as tar:

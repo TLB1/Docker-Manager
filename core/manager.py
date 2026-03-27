@@ -49,7 +49,7 @@ class ContainerSpec:
     image: str
     network_alias: str
     expose_port: bool = True
-    container_port: int = 80
+    container_port: int = None
     port_mappings: list = field(default_factory=list)
 
 
@@ -263,15 +263,16 @@ class DockerManager:
     # Network management                                                   #
     # ------------------------------------------------------------------ #
 
-    def _challenge_network_name(self, challenge_id) -> str:
-        return f"ctfd-challenge-network-{challenge_id}"
+    def _challenge_network_name(self, challenge_id, team_id) -> str:
+        hex_hash = hex(hash(str(team_id) + str(challenge_id)))
+        return f"ctfd-challenge-network-{hex_hash}"
 
-    def _get_or_create_network(self, node: Node, challenge_id) -> str:
+    def _get_or_create_network(self, node: Node, challenge_id, team_id) -> str:
         """
         Ensure the per-challenge Docker bridge network exists on *node*
         before any container is started on it.  Returns the network name.
         """
-        network_name = self._challenge_network_name(challenge_id)
+        network_name = self._challenge_network_name(challenge_id, team_id)
         try:
             if not node.client.networks.list(names=[network_name]):
                 node.client.networks.create(network_name, driver="bridge")
@@ -475,7 +476,7 @@ class DockerManager:
 
         # Create the shared network BEFORE starting any container so the
         # first container's alias is resolvable the moment it starts.
-        network_name = self._get_or_create_network(node, challenge_id)
+        network_name = self._get_or_create_network(node, challenge_id, team_id)
 
         tokens: List[str] = []
         for index, spec in enumerate(specs):
@@ -526,7 +527,7 @@ class DockerManager:
         node = self._node_for_team_challenge(team_id, challenge_id)
 
         # Network must exist before the container starts.
-        network_name = self._get_or_create_network(node, challenge_id)
+        network_name = self._get_or_create_network(node, challenge_id, team_id)
 
         # Default alias to image name (last path component, no tag) when
         # the caller doesn't specify one.

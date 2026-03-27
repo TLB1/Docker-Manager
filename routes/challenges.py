@@ -101,12 +101,15 @@ def _start_all_containers(manager, actor_name, challenge_id, configs):
         resolved.append((cfg, image))
 
     # ── Build one ContainerSpec per config ────────────────────────────
+    # expose_port=False when the config has neither port_mappings nor a
+    # container_port — the container runs on the challenge network only.
     specs = [
         ContainerSpec(
             image=image,
             network_alias=_label_to_alias(cfg.label, cfg.container_index),
             port_mappings=cfg.port_mappings or [],
-            container_port=cfg.container_port or 80,
+            container_port=cfg.container_port or None,
+            expose_port=bool(cfg.port_mappings or cfg.container_port),
         )
         for cfg, image in resolved
     ]
@@ -119,7 +122,6 @@ def _start_all_containers(manager, actor_name, challenge_id, configs):
             "index": cfg.container_index,
             "label": cfg.label or f"Container {cfg.container_index}",
             "token": token,
-            "url": f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/",
         }
         for (cfg, _), token in zip(resolved, tokens)
     ]
@@ -164,6 +166,8 @@ def _container_status_list(manager, actor_name, challenge_id, configs):
             enriched = []
             for pm in cfg.port_mappings:
                 pm_copy = dict(pm)
+                if pm.get("http", True):
+                    pm_copy["url"] = f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/"
                 tcp = tcp_allocs.get(pm.get("container_port"))
                 if tcp:
                     pm_copy["ctfd_tcp_port"] = tcp.ctfd_tcp_port
@@ -178,7 +182,6 @@ def _container_status_list(manager, actor_name, challenge_id, configs):
                 "exists": True,
                 "status": container.status,
                 "token": token,
-                "url": f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/",
             })
         else:
             results.append({
@@ -188,7 +191,6 @@ def _container_status_list(manager, actor_name, challenge_id, configs):
                 "exists": False,
                 "status": None,
                 "token": None,
-                "url": None,
             })
     return results
 

@@ -92,12 +92,14 @@
                   </span>`;
               }
               // HTTP port — clickable link
-              return `<a href="${c.url}" target="_blank" class="btn btn-sm btn-success me-1 mb-1">
+              return `<a href="${pm.url}" target="_blank" class="btn btn-sm btn-success me-1 mb-1">
                 ${label} ↗
               </a>`;
             }).join("");
           } else {
-            bodyHtml = `<a href="${c.url}" target="_blank" class="btn btn-sm btn-success">Open ↗</a>`;
+            bodyHtml = c.url
+              ? `<a href="${c.url}" target="_blank" class="btn btn-sm btn-success">Open ↗</a>`
+              : `<span class="text-muted small">Running (internal)</span>`;
           }
         } else if (stopped) {
           bodyHtml = `<span class="text-muted small">Status: ${escHtml(c.status)}</span>`;

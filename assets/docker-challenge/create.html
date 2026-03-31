@@ -10,6 +10,21 @@
 
 <div class="form-group mt-4">
   <hr>
+  <div class="form-check form-switch mb-3">
+    <input class="form-check-input" type="checkbox" id="use_challenge_network"
+           name="use_challenge_network" value="on" checked>
+    <label class="form-check-label" for="use_challenge_network">
+      Enable seperate challenge networks
+      <small class="text-muted d-block">
+        Connects all containers to a shared Docker bridge network so they can
+        reach each other. Disable for single-container challenges if they don't need to be isolated.
+      </small>
+    </label>
+  </div>
+</div>
+
+<div class="form-group mt-4">
+  <hr>
   <div class="d-flex align-items-center justify-content-between mb-3">
     <div>
       <label class="form-label mb-0">Containers</label>

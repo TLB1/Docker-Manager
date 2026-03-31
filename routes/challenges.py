@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from flask import Blueprint, make_response, request, jsonify, send_from_directory, current_app, render_template_string
+from flask import Blueprint, make_response, request, jsonify, send_from_directory, current_app
 from flask.templating import render_template
 from werkzeug.utils import secure_filename
 import os
@@ -70,11 +70,11 @@ def _label_to_alias(label, index: int) -> str:
     return f"container-{index}"
 
 
-def _start_all_containers(manager, actor_name, challenge_id, configs):
+def _start_all_containers(manager, actor_name, challenge_id, configs, use_network=True):
     """
-    Start one container per DockerContainerConfig entry on the same node,
-    all connected to the shared challenge network.
-    Returns a list of dicts: [{index, label, token, url}, ...]
+    Start one container per DockerContainerConfig entry on the same node.
+    When use_network=True all containers share a per-challenge bridge network.
+    Returns a list of dicts: [{index, label, token}, ...]
     Raises on first failure.
     """
     # ── Sync all images first ─────────────────────────────────────────
@@ -115,7 +115,7 @@ def _start_all_containers(manager, actor_name, challenge_id, configs):
     ]
 
     # ── Start all containers in one call (same node, shared network) ──
-    tokens = manager.create_challenge_containers(actor_name, challenge_id, specs)
+    tokens = manager.create_challenge_containers(actor_name, challenge_id, specs, use_network=use_network)
 
     return [
         {
@@ -243,7 +243,8 @@ def api_docker_start(challenge_id):
         return jsonify({"success": False, "error": "No containers configured for this challenge"}), 400
 
     try:
-        results = _start_all_containers(manager, actor.name, challenge_id, configs)
+        results = _start_all_containers(manager, actor.name, challenge_id, configs,
+                                        use_network=challenge.use_challenge_network)
         return jsonify({"success": True, "containers": results})
     except Exception as e:
         current_app.logger.error(f"[DockerImageChallenge] Failed to start containers: {e}")
@@ -374,7 +375,8 @@ def api_docker_reset(challenge_id):
     _remove_all_containers(manager, actor.name, challenge_id, configs)
 
     try:
-        results = _start_all_containers(manager, actor.name, challenge_id, configs)
+        results = _start_all_containers(manager, actor.name, challenge_id, configs,
+                                        use_network=challenge.use_challenge_network)
         return jsonify({"success": True, "containers": results})
     except Exception as e:
         current_app.logger.error(f"[DockerImageChallenge] Reset failed: {e}")
@@ -723,6 +725,10 @@ class DockerImageChallengeModel(Challenges):
     docker_image_filename = db.Column(db.String(512), nullable=True)
     docker_image_name = db.Column(db.String(512), nullable=True)
     docker_port = db.Column(db.Integer, nullable=True)
+    # When True all containers for this challenge share a Docker bridge network
+    # so they can reach each other by hostname.  Set to False for single-
+    # container challenges that don't need inter-container communication.
+    use_challenge_network = db.Column(db.Boolean, nullable=False, default=True, server_default="1")
 
 
 # ---------------------------------------------------------------------------
@@ -755,10 +761,13 @@ class DockerImageChallenge(BaseChallenge):
 
         data = request.form.to_dict() if request.form else (request.get_json() or {})
 
-        # Pull out our field before it reaches the SQLAlchemy constructor.
+        # Pull out our fields before they reach the SQLAlchemy constructor.
         raw_json = data.pop("docker_containers_json", "[]")
+        use_network_raw = data.pop("use_challenge_network", None)
 
         challenge = cls.challenge_model(**data)
+        # HTML checkboxes send "on" when checked and nothing when unchecked.
+        challenge.use_challenge_network = use_network_raw not in (None, "", "false", "0", "off")
         db.session.add(challenge)
         db.session.commit()
 
@@ -794,6 +803,7 @@ class DockerImageChallenge(BaseChallenge):
         data["docker_image_filename"] = challenge.docker_image_filename
         data["docker_image_name"] = challenge.docker_image_name
         data["docker_port"] = challenge.docker_port
+        data["use_challenge_network"] = challenge.use_challenge_network
 
         # Live container status for each config entry
         data["docker_container_exists"] = False
@@ -828,6 +838,10 @@ class DockerImageChallenge(BaseChallenge):
 
         if "docker_port" in body:
             challenge.docker_port = _int_or_none(body["docker_port"])
+
+        if "use_challenge_network" in body:
+            v = body["use_challenge_network"]
+            challenge.use_challenge_network = v not in (False, None, "", "false", "0", "off")
 
         db.session.commit()
         return data

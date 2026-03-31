@@ -1,14 +1,28 @@
 {% extends "admin/challenges/update.html" %}
 {% block name %}
 <div class="form-group">
-		<label>
-			Name:<br>
-			<small class="form-text text-muted">
-				The name of your challenge
-			</small>
-		</label>
-		<input type="text" class="form-control" name="name" placeholder="Enter challenge name">
-	</div>
+  <label>
+    Name:<br>
+    <small class="form-text text-muted">The name of your challenge</small>
+  </label>
+  <input type="text" class="form-control" name="name" placeholder="Enter challenge name">
+</div>
+
+<div class="form-group mt-3">
+  <hr>
+  <div class="form-check form-switch">
+    <input class="form-check-input" type="checkbox" id="use_challenge_network"
+           name="use_challenge_network" value="on"
+           {% if challenge.use_challenge_network %}checked{% endif %}>
+    <label class="form-check-label" for="use_challenge_network">
+      Enable seperate challenge networks
+      <small class="text-muted d-block">
+        Connects all containers to a shared Docker bridge network so they can
+        reach each other. Disable for single-container challenges if they don't need to be isolated.
+      </small>
+    </label>
+  </div>
+</div>
 <div class="form-group">
     <hr>
     <div class="mb-3">

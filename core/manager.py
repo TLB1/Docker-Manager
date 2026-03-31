@@ -325,7 +325,7 @@ class DockerManager:
         team_id,
         challenge_id,
         image: str,
-        network_name: str,
+        network_name: Optional[str],
         network_alias: str,
         expose_port: bool,
         port_mappings: list,
@@ -335,9 +335,11 @@ class DockerManager:
         """
         Low-level: spin up a single container and return its token.
 
-        The network must already exist on *node* before calling this.
-        The container is connected to *network_name* with *network_alias*
-        so peer containers can reach it by hostname immediately on start.
+        When *network_name* is provided the container joins that network with
+        *network_alias* so peer containers can reach it by hostname.
+        When *network_name* is None the container starts on Docker's default
+        bridge — useful for single-container challenges that don't need
+        inter-container communication.
 
         When expose_port=False no host port is allocated or bound —
         the container is only reachable from within the challenge network.
@@ -380,37 +382,37 @@ class DockerManager:
 
         log.info(
             f"[DockerManager] Starting {image} [{container_index}] on {node.address} "
-            f"alias={network_alias!r} ports={list(docker_ports.values()) or 'none (internal)'}"
+            + (f"network={network_name!r} alias={network_alias!r} " if network_name else "no-network ")
+            + f"ports={list(docker_ports.values()) or 'none (internal)'}"
         )
 
-        # ── Build networking config with alias ───────────────────────────
-        # Passing networking_config to containers.run() means the container
-        # joins the network WITH the alias in a single atomic step — no
-        # post-start connect() call needed.
-        networking_config = node.client.api.create_networking_config({
-            network_name: node.client.api.create_endpoint_config(
-                aliases=[network_alias]
-            )
-        })
+        # ── Build run kwargs ─────────────────────────────────────────────
+        labels = {
+            DockerLabels.CTFD: "true",
+            DockerLabels.TEAM: str(team_id),
+            DockerLabels.CHALLENGE: str(challenge_id),
+            DockerLabels.TOKEN: token,
+            DockerLabels.CONTAINER_INDEX: str(container_index),
+        }
+
+        run_kwargs: Dict = dict(
+            image=image,
+            detach=True,
+            mem_limit=str(RuntimeConfig.MEM_LIMIT_PER_CONTAINER),
+            cpu_quota=RuntimeConfig.DOCKER_CONTAINER_CPU_QUOTA,
+            ports=docker_ports if docker_ports else None,
+            labels=labels,
+        )
+
+        if network_name:
+            labels[DockerLabels.NETWORK_ALIAS] = network_alias
+            run_kwargs["network"] = network_name
+            run_kwargs["networking_config"] = node.client.api.create_networking_config({
+                network_name: node.client.api.create_endpoint_config(aliases=[network_alias])
+            })
 
         try:
-            container = node.client.containers.run(
-                image=image,
-                detach=True,
-                mem_limit=str(RuntimeConfig.MEM_LIMIT_PER_CONTAINER),
-                cpu_quota=RuntimeConfig.DOCKER_CONTAINER_CPU_QUOTA,
-                network=network_name,
-                networking_config=networking_config,
-                ports=docker_ports if docker_ports else None,
-                labels={
-                    DockerLabels.CTFD: "true",
-                    DockerLabels.TEAM: str(team_id),
-                    DockerLabels.CHALLENGE: str(challenge_id),
-                    DockerLabels.TOKEN: token,
-                    DockerLabels.CONTAINER_INDEX: str(container_index),
-                    DockerLabels.NETWORK_ALIAS: network_alias,
-                },
-            )
+            container = node.client.containers.run(**run_kwargs)
         except (ChannelException, SSHException) as e:
             # SSH dropped mid-flight — the container may or may not exist.
             log.warning(
@@ -441,6 +443,7 @@ class DockerManager:
         team_id,
         challenge_id,
         specs: List[ContainerSpec],
+        use_network: bool = True,
     ) -> List[str]:
         """
         Spin up all containers for a multi-container challenge in one call.
@@ -476,7 +479,7 @@ class DockerManager:
 
         # Create the shared network BEFORE starting any container so the
         # first container's alias is resolvable the moment it starts.
-        network_name = self._get_or_create_network(node, challenge_id, team_id)
+        network_name = self._get_or_create_network(node, challenge_id, team_id) if use_network else None
 
         tokens: List[str] = []
         for index, spec in enumerate(specs):

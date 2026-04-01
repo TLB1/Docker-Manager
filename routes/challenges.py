@@ -822,6 +822,8 @@ class DockerImageChallenge(BaseChallenge):
 
     @classmethod
     def update(cls, challenge, request):
+        import json as _json
+
         data = super().update(challenge, request)
         body = request.form or request.get_json() or {}
 
@@ -839,7 +841,53 @@ class DockerImageChallenge(BaseChallenge):
         if "docker_port" in body:
             challenge.docker_port = _int_or_none(body["docker_port"])
 
-        if "use_challenge_network" in body:
+        # When the multi-container JSON is submitted, treat missing
+        # use_challenge_network as unchecked (HTML checkboxes omit the field).
+        raw_containers = body.get("docker_containers_json")
+        if raw_containers is not None:
+            use_network_raw = body.get("use_challenge_network", None)
+            challenge.use_challenge_network = use_network_raw not in (None, "", "false", "0", "off", False)
+
+            try:
+                containers_data = _json.loads(raw_containers) if raw_containers else []
+            except Exception:
+                containers_data = []
+
+            existing = {cfg.container_index: cfg for cfg in _get_ordered_configs(challenge.id)}
+            incoming_indices = set()
+
+            for cfg_data in containers_data:
+                idx = cfg_data.get("index", 0)
+                incoming_indices.add(idx)
+
+                if idx in existing:
+                    cfg = existing[idx]
+                    cfg.label = cfg_data.get("label") or None
+
+                    new_fn = cfg_data.get("docker_image_filename") or None
+                    if cfg.docker_image_filename and cfg.docker_image_filename != new_fn:
+                        cls._delete_image_file(cfg.docker_image_filename)
+                    cfg.docker_image_filename = new_fn
+                    cfg.docker_image_name = cfg_data.get("docker_image_name") or None
+                    cfg.port_mappings = cfg_data.get("port_mappings") or []
+                else:
+                    cfg = DockerContainerConfig(
+                        challenge_id=challenge.id,
+                        container_index=idx,
+                        label=cfg_data.get("label") or None,
+                        docker_image_filename=cfg_data.get("docker_image_filename") or None,
+                        docker_image_name=cfg_data.get("docker_image_name") or None,
+                    )
+                    cfg.port_mappings = cfg_data.get("port_mappings") or []
+                    db.session.add(cfg)
+
+            # Delete configs that were removed in the UI
+            for idx, cfg in existing.items():
+                if idx not in incoming_indices:
+                    if cfg.docker_image_filename:
+                        cls._delete_image_file(cfg.docker_image_filename)
+                    db.session.delete(cfg)
+        elif "use_challenge_network" in body:
             v = body["use_challenge_network"]
             challenge.use_challenge_network = v not in (False, None, "", "false", "0", "off")
 

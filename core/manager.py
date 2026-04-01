@@ -281,9 +281,9 @@ class DockerManager:
             log.warning(f"[DockerManager] Could not ensure network {network_name} on {node}: {e}")
         return network_name
 
-    def _cleanup_challenge_network(self, node: Node, challenge_id):
+    def _cleanup_challenge_network(self, node: Node, challenge_id, team_id):
         """Remove the per-challenge network if no containers are still attached."""
-        network_name = self._challenge_network_name(challenge_id)
+        network_name = self._challenge_network_name(challenge_id, team_id)
         try:
             networks = node.client.networks.list(names=[network_name])
             if not networks:
@@ -583,13 +583,14 @@ class DockerManager:
         self.timer_kill.cancel(token)
 
         challenge_id = container.labels.get(DockerLabels.CHALLENGE)
+        team_id = container.labels.get(DockerLabels.TEAM)
         owning_node = self._find_node_for_container(container)
 
         try:
             container.remove(force=True)
             self.ports_manager.release_port(token)
             if challenge_id and owning_node:
-                self._cleanup_challenge_network(owning_node, challenge_id)
+                self._cleanup_challenge_network(owning_node, challenge_id, team_id)
             return True
         except Exception as e:
             log.warning(f"[DockerManager] Failed to remove container {token}: {e}")

@@ -266,6 +266,22 @@
                 </small>
               </td>
             </tr>
+
+            <tr>
+              <td><strong>Container Cache TTL</strong></td>
+              <td>
+                <div class="input-group">
+                  <input type="number" name="docker_container_cache_ttl"
+                         value="{{ values.CONTAINER_CACHE_TTL }}"
+                         class="form-control" min="5">
+                  <span class="input-group-text">sec</span>
+                </div>
+                <small class="form-text text-muted">
+                  How long container metadata is cached before re-querying Docker (default: 30 s).
+                  Lower values give fresher data on the nodes dashboard; higher values reduce Docker API load.
+                </small>
+              </td>
+            </tr>
           </tbody>
         </table>
 

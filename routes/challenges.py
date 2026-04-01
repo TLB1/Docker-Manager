@@ -317,7 +317,7 @@ def api_token_status(token):
 
 @bp.route("/docker/api/token/<token>/resume", methods=["POST"])
 def api_token_resume(token):
-    """Resume a container by token only — no auth required (token is the secret)."""
+    """Resume all containers for a challenge by token — no auth required (token is the secret)."""
     manager = current_app.docker_manager
     if not manager:
         return jsonify({"success": False, "error": "Docker manager not configured"}), 500
@@ -326,12 +326,19 @@ def api_token_resume(token):
     if not container:
         return jsonify({"success": False, "error": "Container not found"}), 404
 
+    challenge_id = container.labels.get(DockerLabels.CHALLENGE)
+    team_id = container.labels.get(DockerLabels.TEAM)
+
     try:
-        ok = manager.resume_container(token)
+        all_containers = manager.get_containers_for_team_challenge(team_id, challenge_id)
+        for c in all_containers:
+            c_token = c.labels.get(DockerLabels.TOKEN)
+            if c_token:
+                manager.resume_container(c_token)
         url = f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/"
-        return jsonify({"success": True, "resumed": ok, "token": token, "url": url})
+        return jsonify({"success": True, "resumed": True, "token": token, "url": url})
     except Exception as e:
-        current_app.logger.error(f"[DockerImageChallenge] Failed to resume container by token: {e}")
+        current_app.logger.error(f"[DockerImageChallenge] Failed to resume containers by token: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -390,7 +397,17 @@ def api_token_keepalive(token):
     if not manager:
         return "", 204
     try:
-        manager.set_timers(token)
+        container = manager.get_container_by_token(token)
+        if container:
+            challenge_id = container.labels.get(DockerLabels.CHALLENGE)
+            team_id = container.labels.get(DockerLabels.TEAM)
+            all_containers = manager.get_containers_for_team_challenge(team_id, challenge_id)
+            for c in all_containers:
+                c_token = c.labels.get(DockerLabels.TOKEN)
+                if c_token:
+                    manager.set_timers(c_token)
+        else:
+            manager.set_timers(token)
     except Exception:
         pass
     return "", 204

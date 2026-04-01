@@ -20,6 +20,7 @@ from .config import RuntimeConfig
 from .ports import PortsManager
 from .registry import RegistryManager
 from .timer import RunnableTimer
+from .cache import ContainerCache, CachedContainer
 from ..models.node import Node
 from ..models.container import ContainerDetails
 
@@ -92,6 +93,7 @@ class DockerManager:
         self._node_index = 0
         self._sync_events: dict[str, threading.Event] = {}
         self._sync_events_lock = threading.Lock()
+        self._container_cache = ContainerCache(RuntimeConfig.CONTAINER_CACHE_TTL)
 
     # ------------------------------------------------------------------ #
     # Nginx                                                                #
@@ -141,6 +143,32 @@ class DockerManager:
                     self._reconnect_node(node)
                 else:
                     raise
+
+    # ------------------------------------------------------------------ #
+    # Container cache                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _refresh_cache(self):
+        """Query every node and rebuild the container metadata cache."""
+        containers_by_node: Dict[str, list] = {}
+        for node in self.nodes:
+            try:
+                containers = self._node_call(
+                    node,
+                    node.client.containers.list,
+                    all=True,
+                    filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                )
+                containers_by_node[node.address] = containers
+            except Exception as e:
+                log.warning(f"[DockerManager] Cache refresh failed for {node}: {e}")
+                containers_by_node[node.address] = []
+        self._container_cache.rebuild(containers_by_node)
+
+    def _ensure_cache_fresh(self):
+        """Refresh the cache if it has exceeded its TTL."""
+        if self._container_cache.is_stale():
+            self._refresh_cache()
 
     # ------------------------------------------------------------------ #
     # Timers                                                               #
@@ -251,12 +279,9 @@ class DockerManager:
         Counts distinct challenges rather than raw containers so that
         multi-container challenges consume one quota slot.
         """
-        running = self.running_containers_for_team(team_id)
-        challenge_ids = {
-            c.labels.get(DockerLabels.CHALLENGE)
-            for c in running
-            if c.labels.get(DockerLabels.CHALLENGE)
-        }
+        self._ensure_cache_fresh()
+        cached = self._container_cache.get_by_team(str(team_id))
+        challenge_ids = {c.challenge_id for c in cached if c.challenge_id}
         return len(challenge_ids) < RuntimeConfig.MAX_ACTIVE_CONTAINERS_PER_GROUP
 
     # ------------------------------------------------------------------ #
@@ -423,6 +448,7 @@ class DockerManager:
             existing = self.get_container_by_token(token)
             if existing:
                 self.set_timers(token)
+                self._container_cache.add(CachedContainer.from_docker(existing, node.address))
                 return token
             if expose_port:
                 self.ports_manager.release_port(token)
@@ -432,6 +458,7 @@ class DockerManager:
                 self.ports_manager.release_port(token)
             raise
 
+        self._container_cache.add(CachedContainer.from_docker(container, node.address))
         return token
 
     # ------------------------------------------------------------------ #
@@ -562,6 +589,7 @@ class DockerManager:
             return False
         try:
             container.stop()
+            self._container_cache.update_status(token, "exited")
             return True
         except Exception:
             return False
@@ -571,6 +599,7 @@ class DockerManager:
         if not container:
             return False
         container.start()
+        self._container_cache.update_status(token, "running")
         self.set_timers(token)
         return True
 
@@ -588,6 +617,7 @@ class DockerManager:
 
         try:
             container.remove(force=True)
+            self._container_cache.remove(token)
             self.ports_manager.release_port(token)
             if challenge_id and owning_node:
                 self._cleanup_challenge_network(owning_node, challenge_id, team_id)
@@ -614,6 +644,7 @@ class DockerManager:
                 removed += 1
             except Exception as e:
                 log.error(f"Failed removing container {container.id[:12]}: {e}")
+        self._container_cache.clear()
         return removed
 
     # ------------------------------------------------------------------ #
@@ -637,19 +668,13 @@ class DockerManager:
         node (required for the shared Docker network to work).
         Falls back to _next_node() when no containers exist yet.
         """
-        for node in self.nodes:
-            try:
-                existing = node.client.containers.list(
-                    all=True,
-                    filters={"label": [
-                        f"{DockerLabels.TEAM}={team_id}",
-                        f"{DockerLabels.CHALLENGE}={challenge_id}",
-                    ]},
-                )
-                if existing:
+        self._ensure_cache_fresh()
+        cached = self._container_cache.get_by_team_challenge(str(team_id), str(challenge_id))
+        if cached:
+            address = cached[0].node_address
+            for node in self.nodes:
+                if node.address == address:
                     return node
-            except Exception:
-                pass
         return self._next_node()
 
     # ------------------------------------------------------------------ #
@@ -668,34 +693,30 @@ class DockerManager:
         return int(stdout.read().decode().split()[1]) * 1024
 
     def update_nodes_details(self):
+        self._ensure_cache_fresh()
         for node in self.nodes:
             node.containers = []
             log.info(f"Updating stats for {node}...")
             try:
                 info = self._node_call(node, node.client.info)
-                containers = self._node_call(
-                    node,
-                    node.client.containers.list,
-                    all=True,
-                    filters={"label": [f"{DockerLabels.CTFD}=true"]},
-                )
             except Exception as e:
                 log.error(f"[DockerManager] update_nodes_details failed for {node}: {e}")
                 continue
 
-            for container in containers:
+            cached = self._container_cache.get_by_node(node.address)
+            for c in cached:
                 node.containers.append(ContainerDetails(
-                    challenge=container.labels.get(DockerLabels.CHALLENGE),
-                    team=container.labels.get(DockerLabels.TEAM),
-                    token=container.labels.get(DockerLabels.TOKEN),
-                    container_index=container.labels.get(DockerLabels.CONTAINER_INDEX),
-                    url=f"http://{container.labels.get(DockerLabels.TOKEN)}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/",
-                    image=container.image,
-                    status=container.status,
+                    challenge=c.challenge_id,
+                    team=c.team_id,
+                    token=c.token,
+                    container_index=c.container_index,
+                    url=f"http://{c.token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/",
+                    image=c.image_name,
+                    status=c.status,
                 ))
 
-            node.stats.running_count = sum(1 for c in containers if c.status == "running")
-            node.stats.exited_count  = sum(1 for c in containers if c.status != "running")
+            node.stats.running_count = sum(1 for c in cached if c.status == "running")
+            node.stats.exited_count  = sum(1 for c in cached if c.status != "running")
             node.stats.mem_total = int(info.get("MemTotal", 0))
             node.stats.free_mem  = self.node_free_mem(node)
             node.stats.used_mem  = node.stats.mem_total - node.stats.free_mem

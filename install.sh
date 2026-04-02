@@ -185,7 +185,7 @@ services["ctfd-nginx-proxy"] = {
         "./CTFd/plugins/Docker-Manager/nginx/nginx.conf:/etc/nginx/nginx.conf:ro",
         "proxy_data:/etc/nginx/data",
     ],
-    "ports":      ["8008:8008"],
+    "ports":      ["8008:8008", "10000-10100:10000-10100"],
     "depends_on": ["ctfd"],
 }
 

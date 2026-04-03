@@ -296,18 +296,44 @@ class DockerManager:
         """
         Ensure the per-challenge Docker bridge network exists on *node*
         before any container is started on it.  Returns the network name.
+
+        Raises on failure — callers must not silently proceed without a network.
         """
         network_name = self._challenge_network_name(challenge_id, team_id)
-        try:
-            if not node.client.networks.list(names=[network_name]):
-                node.client.networks.create(network_name, driver="bridge")
-                log.debug(f"[DockerManager] Created network {network_name} on {node}")
-        except Exception as e:
-            log.warning(f"[DockerManager] Could not ensure network {network_name} on {node}: {e}")
+        if not node.client.networks.list(names=[network_name]):
+            node.client.networks.create(network_name, driver="bridge")
+            log.debug(f"[DockerManager] Created network {network_name} on {node}")
         return network_name
 
+    def _purge_challenge_networks(self):
+        """
+        Remove every ctfd-challenge-network-* network on every node that has
+        no containers attached.  Called from delete_all() so orphaned networks
+        from previous runs don't accumulate and exhaust Docker's subnet pool.
+        """
+        prefix = "ctfd-challenge-network-"
+        for node in self.nodes:
+            try:
+                networks = node.client.networks.list(names=[f"{prefix}*"])
+                for net in networks:
+                    try:
+                        net.reload()
+                        if not net.attrs.get("Containers"):
+                            net.remove()
+                            log.debug(f"[DockerManager] Purged network {net.name} on {node}")
+                    except Exception as e:
+                        log.debug(f"[DockerManager] Could not purge network {net.name} on {node}: {e}")
+            except Exception as e:
+                log.warning(f"[DockerManager] Network purge failed on {node}: {e}")
+
     def _cleanup_challenge_network(self, node: Node, challenge_id, team_id):
-        """Remove the per-challenge network if no containers are still attached."""
+        """Remove the per-challenge network only when no containers reference it.
+
+        docker-py's network.containers only lists *running* containers.
+        network.attrs["Containers"] (populated after reload) includes stopped
+        and paused containers too — we must check that to avoid deleting a
+        network that suspended containers still need to re-attach to on resume.
+        """
         network_name = self._challenge_network_name(challenge_id, team_id)
         try:
             networks = node.client.networks.list(names=[network_name])
@@ -315,13 +341,16 @@ class DockerManager:
                 return
             network = networks[0]
             network.reload()
-            if not network.containers:
+            # attrs["Containers"] is a dict keyed by container-id; it includes
+            # every container connected to the network regardless of state.
+            connected = network.attrs.get("Containers", {})
+            if not connected:
                 network.remove()
                 log.debug(f"[DockerManager] Removed empty network {network_name} on {node}")
             else:
                 log.debug(
                     f"[DockerManager] Network {network_name} still has "
-                    f"{len(network.containers)} container(s), skipping removal"
+                    f"{len(connected)} container(s), skipping removal"
                 )
         except Exception as e:
             log.debug(f"[DockerManager] Network cleanup {network_name} on {node}: {e}")
@@ -431,33 +460,69 @@ class DockerManager:
 
         if network_name:
             labels[DockerLabels.NETWORK_ALIAS] = network_alias
-            run_kwargs["network"] = network_name
-            run_kwargs["networking_config"] = node.client.api.create_networking_config({
-                network_name: node.client.api.create_endpoint_config(aliases=[network_alias])
-            })
+            # Do NOT pass network/networking_config to create — docker-py's
+            # handling of those kwargs differs across versions and may silently
+            # discard our aliases or set an unexpected NetworkMode.
+            # We connect explicitly after creation (see below).
 
+        # ── Step 1: create (do not start yet) ───────────────────────────
         try:
-            container = node.client.containers.run(**run_kwargs)
+            container = node.client.containers.create(**run_kwargs)
         except (ChannelException, SSHException) as e:
-            # SSH dropped mid-flight — the container may or may not exist.
             log.warning(
-                f"[DockerManager] SSH dropped during containers.run(), "
+                f"[DockerManager] SSH dropped during containers.create(), "
                 f"checking if container was created: {e}"
             )
             self._reconnect_node(node)
             existing = self.get_container_by_token(token)
             if existing:
-                self.set_timers(token)
                 self._container_cache.add(CachedContainer.from_docker(existing, node.address))
                 return token
             if expose_port:
                 self.ports_manager.release_port(token)
             raise
-        except Exception as e:
+        except Exception:
             if expose_port:
                 self.ports_manager.release_port(token)
             raise
 
+        # ── Step 2: connect to the challenge network with alias ──────────
+        if network_name:
+            try:
+                network = node.client.networks.get(network_name)
+                network.connect(container, aliases=[network_alias])
+            except Exception as e:
+                log.error(
+                    f"[DockerManager] Failed to connect {token} to {network_name}: {e}"
+                )
+                container.remove(force=True)
+                if expose_port:
+                    self.ports_manager.release_port(token)
+                raise RuntimeError(
+                    f"Could not connect container to network {network_name}: {e}"
+                ) from e
+
+        # ── Step 3: start ────────────────────────────────────────────────
+        try:
+            container.start()
+        except (ChannelException, SSHException) as e:
+            log.warning(f"[DockerManager] SSH dropped during container.start(): {e}")
+            self._reconnect_node(node)
+            existing = self.get_container_by_token(token)
+            if existing:
+                self._container_cache.add(CachedContainer.from_docker(existing, node.address))
+                return token
+            container.remove(force=True)
+            if expose_port:
+                self.ports_manager.release_port(token)
+            raise
+        except Exception:
+            container.remove(force=True)
+            if expose_port:
+                self.ports_manager.release_port(token)
+            raise
+
+        container.reload()
         self._container_cache.add(CachedContainer.from_docker(container, node.address))
         return token
 
@@ -598,7 +663,23 @@ class DockerManager:
         container = self.get_container_by_token(token)
         if not container:
             return False
-        container.start()
+
+        # The per-challenge network is removed by _cleanup_challenge_network
+        # when a container is suspended (no running containers remain attached).
+        # Re-create it on the correct node before starting so Docker can
+        # re-attach the container to its configured network.
+        challenge_id = container.labels.get(DockerLabels.CHALLENGE)
+        team_id      = container.labels.get(DockerLabels.TEAM)
+        node         = self._find_node_for_container(container)
+        if challenge_id and team_id and node:
+            self._get_or_create_network(node, challenge_id, team_id)
+
+        try:
+            container.start()
+        except Exception as e:
+            log.error(f"[DockerManager] Failed to start container {token}: {e}")
+            return False
+
         self._container_cache.update_status(token, "running")
         self.set_timers(token)
         return True
@@ -645,6 +726,7 @@ class DockerManager:
             except Exception as e:
                 log.error(f"Failed removing container {container.id[:12]}: {e}")
         self._container_cache.clear()
+        self._purge_challenge_networks()
         return removed
 
     # ------------------------------------------------------------------ #

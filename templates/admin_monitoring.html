@@ -1,0 +1,115 @@
+{% extends "admin/base.html" %}
+
+{% block content %}
+<div class="container">
+
+  {# ── Header ── #}
+  <div class="row mb-2">
+    <div class="col d-flex align-items-center justify-content-between flex-wrap gap-2">
+      <div>
+        <br>
+        <h1 class="mb-0">Container Monitoring</h1>
+        <small class="text-muted">Live metrics &middot; refreshes every 10 s</small>
+      </div>
+      <div class="d-flex align-items-center gap-3 mt-2">
+        <span class="badge bg-secondary" id="status-badge">Connecting…</span>
+        <small class="text-muted" id="last-updated"></small>
+        <a href="{{ url_for('admin_docker_manager.nodes_dashboard') }}"
+           class="btn btn-sm btn-outline-secondary">&#8592; Nodes</a>
+      </div>
+    </div>
+  </div>
+
+  <hr class="my-4">
+
+  {# ── Historical graphs ── #}
+  <div class="row mb-3">
+    <div class="col">
+      <h2 class="mb-0">Historical Graphs</h2>
+      <small class="text-muted">Last 10 minutes (10 s resolution)</small>
+    </div>
+  </div>
+
+  <div class="row" id="charts-container">
+    <div class="col-12 text-center text-muted py-3">
+      <small>Charts appear once data has been collected.</small>
+    </div>
+  </div>
+
+  <hr class="my-4">
+
+  {# ── Container stats table ── #}
+  <div class="row d-flex align-items-center justify-content-between mb-3 px-3">
+    <h2 class="mb-0">Container Stats</h2>
+    <div class="d-flex align-items-center gap-2 flex-wrap mt-2">
+      <label class="small text-muted mb-0 px-2">Search</label>
+      <input id="containerSearch" type="text"
+             class="form-control form-control-sm shadow-sm border-0"
+             style="width:200px; background-color:#e9e9ed;"
+             placeholder="Search…">
+      <label class="small text-muted mb-0 px-2">Sort by</label>
+      <select id="containerSort"
+              class="form-select form-select-sm shadow-sm border-0"
+              style="width:150px; height:31px;">
+        <option value="cpu">CPU %</option>
+        <option value="mem">Memory</option>
+        <option value="status">Status</option>
+        <option value="challenge">Challenge</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-hover align-middle" id="container-table">
+      <thead class="table-light">
+        <tr>
+          <th style="width:16px;"></th>
+          <th>Challenge</th>
+          <th>Team</th>
+          <th>Node</th>
+          <th>Image</th>
+          <th style="width:90px;">CPU %</th>
+          <th style="width:180px;">Memory</th>
+          <th style="width:90px;"></th>
+        </tr>
+      </thead>
+      <tbody id="container-tbody">
+        <tr>
+          <td colspan="8" class="text-center text-muted py-4">Loading…</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr class="my-4">
+
+  {# ── Activity log ── #}
+  <div class="row mb-3">
+    <div class="col d-flex align-items-center justify-content-between">
+      <div>
+        <h2 class="mb-0">Activity Log</h2>
+        <small class="text-muted">Container lifecycle events</small>
+      </div>
+      <button class="btn btn-sm btn-outline-secondary" id="clear-log-btn">Clear</button>
+    </div>
+  </div>
+
+  <div id="activity-log"
+       class="border rounded p-2"
+       style="max-height:300px; overflow-y:auto; font-family:monospace; font-size:0.82rem; background:#f8f9fa;">
+    <div class="text-muted text-center py-2" id="log-placeholder">No events yet.</div>
+  </div>
+
+  <br>
+</div>
+
+{# meta tag carries API URLs and CSRF token to the script #}
+<span id="monitor-meta"
+      data-csrf="{{ Session.nonce }}"
+      data-metrics-url="{{ url_for('admin_docker_manager.api_current_metrics') }}"
+      data-history-url="{{ url_for('admin_docker_manager.api_metrics_history') }}"
+      style="display:none;"></span>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="/plugins/Docker-Manager/assets/admin_monitoring.js"></script>
+{% endblock %}

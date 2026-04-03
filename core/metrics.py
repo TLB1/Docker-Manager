@@ -31,11 +31,9 @@ import paramiko
 from docker import DockerClient
 from paramiko.client import SSHClient
 
-log = logging.getLogger(__name__)
+from .config import RuntimeConfig
 
-HISTORY_SIZE   = 60    # ring-buffer depth  (~10 min at 10 s)
-POLL_INTERVAL  = 10    # seconds between collection passes
-STATS_WORKERS  = 20    # max concurrent container.stats() calls per node
+log = logging.getLogger(__name__)
 
 LABEL_TOKEN     = "ctfd-token"
 LABEL_CHALLENGE = "ctfd-challenge-id"
@@ -189,7 +187,7 @@ class MetricsStore:
 
     def __init__(self):
         self._lock              = threading.RLock()
-        self._history: deque    = deque(maxlen=HISTORY_SIZE)
+        self._history: deque    = deque(maxlen=RuntimeConfig.METRICS_HISTORY_SIZE)
         self._events: deque     = deque(maxlen=500)
         self._prev_tokens: set  = set()
 
@@ -214,6 +212,12 @@ class MetricsStore:
             log.warning("[Metrics] No nodes to monitor.")
             return
 
+        # Resize the history deque if the configured size changed since __init__
+        with self._lock:
+            wanted = RuntimeConfig.METRICS_HISTORY_SIZE
+            if self._history.maxlen != wanted:
+                self._history = deque(self._history, maxlen=wanted)
+
         self._stop_evt.clear()
         self._thread = threading.Thread(
             target=self._poll_loop,
@@ -222,7 +226,7 @@ class MetricsStore:
         )
         self._thread.start()
         log.info("[Metrics] Background poller started (%d node(s), interval=%ds)",
-                 len(self._nodes), POLL_INTERVAL)
+                 len(self._nodes), RuntimeConfig.METRICS_POLL_INTERVAL)
 
     def stop(self) -> None:
         self._stop_evt.set()
@@ -309,7 +313,7 @@ class MetricsStore:
                 self._detect_changes(snapshot)
             except Exception as e:
                 log.error("[Metrics] Poll error: %s", e, exc_info=True)
-            self._stop_evt.wait(POLL_INTERVAL)
+            self._stop_evt.wait(RuntimeConfig.METRICS_POLL_INTERVAL)
 
     def _collect_all(self) -> MetricsSnapshot:
         ts = time.time()
@@ -343,7 +347,7 @@ class MetricsStore:
 
             stats_map: Dict[str, dict] = {}
             if running_ctrs:
-                workers = min(STATS_WORKERS, len(running_ctrs))
+                workers = min(RuntimeConfig.METRICS_STATS_WORKERS, len(running_ctrs))
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     futures = {pool.submit(c.stats, stream=False): c for c in running_ctrs}
                     for fut in as_completed(futures):

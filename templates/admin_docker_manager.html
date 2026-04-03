@@ -282,6 +282,54 @@
                 </small>
               </td>
             </tr>
+
+            <tr>
+              <td><strong>Metrics Poll Interval</strong></td>
+              <td>
+                <div class="input-group">
+                  <input type="number" name="docker_metrics_poll_interval"
+                         value="{{ values.METRICS_POLL_INTERVAL }}"
+                         class="form-control" min="5">
+                  <span class="input-group-text">sec</span>
+                </div>
+                <small class="form-text text-muted">
+                  How often the background metrics collector samples all nodes.
+                  Lower values give more granular graphs; higher values reduce Docker API load.
+                </small>
+              </td>
+            </tr>
+
+            <tr>
+              <td><strong>Metrics History Size</strong></td>
+              <td>
+                <div class="input-group">
+                  <input type="number" name="docker_metrics_history_size"
+                         value="{{ values.METRICS_HISTORY_SIZE }}"
+                         class="form-control" min="10">
+                  <span class="input-group-text">samples</span>
+                </div>
+                <small class="form-text text-muted">
+                  Number of samples retained for the monitoring graphs
+                  (e.g. 60 samples × 10 s interval = 10 min of history).
+                </small>
+              </td>
+            </tr>
+
+            <tr>
+              <td><strong>Metrics Stats Workers</strong></td>
+              <td>
+                <div class="input-group">
+                  <input type="number" name="docker_metrics_stats_workers"
+                         value="{{ values.METRICS_STATS_WORKERS }}"
+                         class="form-control" min="1">
+                  <span class="input-group-text">threads</span>
+                </div>
+                <small class="form-text text-muted">
+                  Maximum number of concurrent <code>container.stats()</code> calls per node.
+                  Increase for large deployments; decrease to reduce load on the Docker daemon.
+                </small>
+              </td>
+            </tr>
           </tbody>
         </table>
 

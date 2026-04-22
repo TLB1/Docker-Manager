@@ -262,6 +262,42 @@ setup_node() {
         echo -e "    ${CYAN}sudo chmod 440 /etc/sudoers.d/ctfd-cert${NC}"
         echo -e "    ${CYAN}sudo usermod -aG docker ${node_user}${NC}"
     fi
+
+    # Step 3 – optionally overwrite /etc/docker/daemon.json with expanded
+    # default-address-pools so the node can host many more challenge networks.
+    echo ""
+    echo -ne "${BOLD}  Would you like to optimize the docker network configuration for this node? (Y/n) ${NC}"
+    read -r optimize_net
+    optimize_net="${optimize_net:-Y}"
+
+    if [[ "$optimize_net" =~ ^[Yy]$ ]]; then
+        info "  Writing /etc/docker/daemon.json and restarting docker..."
+        ssh -t -i "$SSH_DIR/id_ed25519" \
+            -o StrictHostKeyChecking=accept-new \
+            -o PasswordAuthentication=no \
+            "${node_user}@${node_ip}" \
+            'set -e
+             sudo mkdir -p /etc/docker
+             sudo tee /etc/docker/daemon.json > /dev/null << '"'"'JSONEOF'"'"'
+{
+  "default-address-pools": [
+    { "base": "10.200.0.0/13", "size": 24 }
+  ]
+}
+JSONEOF
+             sudo systemctl restart docker
+             echo "Docker restarted"'
+
+        if [[ $? -eq 0 ]]; then
+            success "  Docker network configuration optimized on ${node_ip}"
+        else
+            warn "  Network config failed – apply manually on ${node_ip}:"
+            echo -e "    Write the address-pools config to ${CYAN}/etc/docker/daemon.json${NC}"
+            echo -e "    Then run: ${CYAN}sudo systemctl restart docker${NC}"
+        fi
+    else
+        info "  Skipping docker network optimization for ${node_ip}"
+    fi
 }
 
 # ── Interactive node loop ─────────────────────────────────────

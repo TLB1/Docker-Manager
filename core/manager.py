@@ -1,18 +1,33 @@
 import json
 import logging
 import os
+import random
 import subprocess
 import tarfile
 import secrets
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import docker
+import requests.exceptions
 from docker import DockerClient
+from docker.errors import APIError
 from docker.models.containers import Container
+from docker.types import IPAMPool
 from paramiko.ssh_exception import ChannelException, SSHException
+
+_TRANSPORT_ERRORS = (
+    ChannelException,
+    SSHException,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+    ConnectionResetError,
+    BrokenPipeError,
+    EOFError,
+)
 
 from .labels import DockerLabels
 from .ssh import SSHPool
@@ -64,6 +79,30 @@ def _make_docker_client_over_ssh(ssh_pool: SSHPool, node: Node) -> DockerClient:
     return DockerClient(base_url=f"ssh://{node.name}@{node.address}")
 
 
+def _build_docker_client(node: Node) -> DockerClient:
+    """
+    Build a fresh DockerClient for *node* and enable SSH keepalive on the
+    underlying paramiko transport.
+
+    docker-py's SSH backend creates its own paramiko client but does NOT set
+    TCP keepalive, so an idle or slow transport can be silently killed by
+    sshd's ClientAliveInterval or an NAT middlebox. The next Docker call then
+    sees the half-open connection close mid-request and raises
+    ``RemoteDisconnected``. Setting the keepalive interval here keeps the
+    transport healthy across the quieter windows between polling cycles.
+    """
+    client = DockerClient(base_url=f"ssh://{node.name}@{node.address}")
+    try:
+        adapter = client.api.get_adapter(client.api.base_url)
+        ssh_client = getattr(adapter, "ssh_client", None)
+        transport = ssh_client.get_transport() if ssh_client else None
+        if transport is not None:
+            transport.set_keepalive(30)
+    except Exception as e:
+        log.debug(f"[DockerManager] Could not set keepalive on {node}: {e}")
+    return client
+
+
 # ── Manager ─────────────────────────────────────────────────────────────────
 
 class DockerManager:
@@ -84,7 +123,7 @@ class DockerManager:
         if base_urls:
             for node in self.nodes:
                 if node.client is None:
-                    node.client = DockerClient(base_url=f"ssh://{node.name}@{node.address}")
+                    node.client = _build_docker_client(node)
 
         self.ports_manager = PortsManager()
         self.registry = RegistryManager()
@@ -94,6 +133,10 @@ class DockerManager:
         self._sync_events: dict[str, threading.Event] = {}
         self._sync_events_lock = threading.Lock()
         self._container_cache = ContainerCache(RuntimeConfig.CONTAINER_CACHE_TTL)
+        # Per-(node, network-name) locks serialize concurrent check-and-create
+        # calls so the same network can't be created twice in parallel.
+        self._network_locks: dict[tuple, threading.Lock] = {}
+        self._network_locks_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # Nginx                                                                #
@@ -125,24 +168,65 @@ class DockerManager:
         except Exception:
             pass
         try:
-            node.client = DockerClient(base_url=f"ssh://{node.name}@{node.address}")
+            node.client = _build_docker_client(node)
         except Exception as e:
             raise RuntimeError(f"Failed to reconnect Docker client for {node}: {e}")
 
-    def _node_call(self, node: Node, fn, *args, retries: int = 1, **kwargs):
+    def _node_call(self, node: Node, op, retries: Optional[int] = None):
         """
-        Call fn(*args, **kwargs) against node.client.
-        On ChannelException / SSHException, reconnect once and retry.
+        Execute *op(node.client)* with SSH-session throttling and retry.
+
+        The operation is invoked as ``op(client)`` where *client* is the
+        node's CURRENT DockerClient. This matters because on a transport
+        failure we rebuild ``node.client``; re-invoking the lambda picks up
+        the fresh client instead of calling into the dead one.
+
+        Retries on transport-level errors only:
+        - ChannelException / SSHException (paramiko): channel exhaustion or
+          transport protocol error. Channel errors usually mean sshd's
+          MaxSessions was momentarily saturated — transport is still healthy.
+        - requests.exceptions.ConnectionError wrapping RemoteDisconnected:
+          docker-py's HTTP-over-SSH transport died. Reconnect immediately.
+
+        Higher-level Docker errors (container name conflict, 404, etc.) are
+        NOT retried — those are caller bugs, not infrastructure.
         """
+        if retries is None:
+            retries = RuntimeConfig.NODE_SSH_RETRIES
+
+        last_exc = None
         for attempt in range(retries + 1):
             try:
-                return fn(*args, **kwargs)
-            except (ChannelException, SSHException) as e:
-                if attempt < retries:
-                    log.warning(f"[DockerManager] SSH channel error on {node}, reconnecting: {e}")
-                    self._reconnect_node(node)
-                else:
-                    raise
+                with node.ssh_semaphore:
+                    return op(node.client)
+            except _TRANSPORT_ERRORS as e:
+                last_exc = e
+                if attempt >= retries:
+                    break
+                # RemoteDisconnected / ConnectionError mean the transport is
+                # dead — rebuild the client before the next attempt.
+                # ChannelException usually means MaxSessions was momentarily
+                # exhausted; the transport is still fine, so only rebuild
+                # after the first retry fails.
+                transport_dead = isinstance(e, (
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError,
+                    ConnectionResetError,
+                    BrokenPipeError,
+                    EOFError,
+                ))
+                if transport_dead or attempt >= 1:
+                    log.warning(
+                        f"[DockerManager] Transport error on {node} "
+                        f"(attempt {attempt + 1}/{retries + 1}), reconnecting: {e}"
+                    )
+                    try:
+                        self._reconnect_node(node)
+                    except Exception as re:
+                        log.warning(f"[DockerManager] Reconnect failed on {node}: {re}")
+                backoff = min(0.5 * (2 ** attempt), 4.0) + random.uniform(0, 0.25)
+                time.sleep(backoff)
+        raise last_exc
 
     # ------------------------------------------------------------------ #
     # Container cache                                                      #
@@ -155,9 +239,10 @@ class DockerManager:
             try:
                 containers = self._node_call(
                     node,
-                    node.client.containers.list,
-                    all=True,
-                    filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                    lambda c: c.containers.list(
+                        all=True,
+                        filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                    ),
                 )
                 containers_by_node[node.address] = containers
             except Exception as e:
@@ -194,7 +279,7 @@ class DockerManager:
         results: List[Container] = []
         for node in self.nodes:
             try:
-                containers = self._node_call(node, node.client.containers.list, **kwargs)
+                containers = self._node_call(node, lambda c: c.containers.list(**kwargs))
                 results.extend(containers)
             except Exception as e:
                 log.error(f"[DockerManager] Failed to query containers on {node}: {e}")
@@ -257,13 +342,11 @@ class DockerManager:
         """Return the Node that owns *container*, or None."""
         for node in self.nodes:
             try:
-                ids = {
-                    c.id for c in node.client.containers.list(
-                        all=True,
-                        filters={"id": container.id},
-                    )
-                }
-                if container.id in ids:
+                containers = self._node_call(
+                    node,
+                    lambda c: c.containers.list(all=True, filters={"id": container.id}),
+                )
+                if any(c.id == container.id for c in containers):
                     return node
             except Exception:
                 pass
@@ -292,17 +375,44 @@ class DockerManager:
         hex_hash = hex(hash(str(team_id) + str(challenge_id)))
         return f"ctfd-challenge-network-{hex_hash}"
 
+    def _network_lock(self, node: Node, network_name: str) -> threading.Lock:
+        """Return (lazily-creating) the per-(node, network) mutex."""
+        key = (node.address, network_name)
+        with self._network_locks_lock:
+            lock = self._network_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._network_locks[key] = lock
+            return lock
+
     def _get_or_create_network(self, node: Node, challenge_id, team_id) -> str:
         """
         Ensure the per-challenge Docker bridge network exists on *node*
         before any container is started on it.  Returns the network name.
 
         Raises on failure — callers must not silently proceed without a network.
+
+        Serialized per (node, network_name) so concurrent calls for containers
+        in the same multi-container challenge can't both race into create().
+        A 409 conflict is still tolerated as a safety net in case another
+        process (e.g. a parallel request handler on a different worker) beats
+        us to it.
         """
         network_name = self._challenge_network_name(challenge_id, team_id)
-        if not node.client.networks.list(names=[network_name]):
-            node.client.networks.create(network_name, driver="bridge")
-            log.debug(f"[DockerManager] Created network {network_name} on {node}")
+        with self._network_lock(node, network_name):
+            existing = self._node_call(node, lambda c: c.networks.list(names=[network_name]))
+            if existing:
+                return network_name
+            try:
+                self._node_call(node, lambda c: c.networks.create(network_name, driver="bridge"))
+                log.debug(f"[DockerManager] Created network {network_name} on {node}")
+            except APIError as e:
+                if e.status_code == 409 or "already exists" in str(e).lower():
+                    log.debug(
+                        f"[DockerManager] Network {network_name} already exists on {node} (raced)"
+                    )
+                else:
+                    raise
         return network_name
 
     def _purge_challenge_networks(self):
@@ -314,12 +424,15 @@ class DockerManager:
         prefix = "ctfd-challenge-network-"
         for node in self.nodes:
             try:
-                networks = node.client.networks.list(names=[f"{prefix}*"])
+                networks = self._node_call(node, lambda c: c.networks.list(names=[f"{prefix}*"]))
                 for net in networks:
                     try:
-                        net.reload()
+                        # net.reload/remove are bound to the Network's original
+                        # client. If the transport died, reload() will fail and
+                        # we skip this net — next purge cycle catches it.
+                        self._node_call(node, lambda _c, n=net: n.reload())
                         if not net.attrs.get("Containers"):
-                            net.remove()
+                            self._node_call(node, lambda _c, n=net: n.remove())
                             log.debug(f"[DockerManager] Purged network {net.name} on {node}")
                     except Exception as e:
                         log.debug(f"[DockerManager] Could not purge network {net.name} on {node}: {e}")
@@ -336,16 +449,16 @@ class DockerManager:
         """
         network_name = self._challenge_network_name(challenge_id, team_id)
         try:
-            networks = node.client.networks.list(names=[network_name])
+            networks = self._node_call(node, lambda c: c.networks.list(names=[network_name]))
             if not networks:
                 return
             network = networks[0]
-            network.reload()
+            self._node_call(node, lambda _c, n=network: n.reload())
             # attrs["Containers"] is a dict keyed by container-id; it includes
             # every container connected to the network regardless of state.
             connected = network.attrs.get("Containers", {})
             if not connected:
-                network.remove()
+                self._node_call(node, lambda _c, n=network: n.remove())
                 log.debug(f"[DockerManager] Removed empty network {network_name} on {node}")
             else:
                 log.debug(
@@ -361,8 +474,8 @@ class DockerManager:
         containers in the network can reach it by hostname.
         """
         try:
-            network = node.client.networks.get(network_name)
-            network.connect(container, aliases=[alias])
+            network = self._node_call(node, lambda c: c.networks.get(network_name))
+            self._node_call(node, lambda _c, n=network: n.connect(container, aliases=[alias]))
         except Exception as e:
             log.warning(
                 f"[DockerManager] Could not connect {container.name} "
@@ -467,13 +580,12 @@ class DockerManager:
 
         # ── Step 1: create (do not start yet) ───────────────────────────
         try:
-            container = node.client.containers.create(**run_kwargs)
-        except (ChannelException, SSHException) as e:
+            container = self._node_call(node, lambda c: c.containers.create(**run_kwargs))
+        except _TRANSPORT_ERRORS as e:
             log.warning(
-                f"[DockerManager] SSH dropped during containers.create(), "
+                f"[DockerManager] Transport error after retries during containers.create(), "
                 f"checking if container was created: {e}"
             )
-            self._reconnect_node(node)
             existing = self.get_container_by_token(token)
             if existing:
                 self._container_cache.add(CachedContainer.from_docker(existing, node.address))
@@ -486,16 +598,34 @@ class DockerManager:
                 self.ports_manager.release_port(token)
             raise
 
+        # After create we re-fetch the container by token when retrying
+        # destructive operations — the Container object returned by create()
+        # binds to the old client and won't survive a reconnect.
+        container_id = container.id
+
+        def _fetch_container(c):
+            try:
+                return c.containers.get(container_id)
+            except Exception:
+                return container
+
         # ── Step 2: connect to the challenge network with alias ──────────
         if network_name:
             try:
-                network = node.client.networks.get(network_name)
-                network.connect(container, aliases=[network_alias])
+                self._node_call(
+                    node,
+                    lambda c: c.networks.get(network_name).connect(
+                        _fetch_container(c), aliases=[network_alias]
+                    ),
+                )
             except Exception as e:
                 log.error(
                     f"[DockerManager] Failed to connect {token} to {network_name}: {e}"
                 )
-                container.remove(force=True)
+                try:
+                    self._node_call(node, lambda c: _fetch_container(c).remove(force=True))
+                except Exception:
+                    pass
                 if expose_port:
                     self.ports_manager.release_port(token)
                 raise RuntimeError(
@@ -504,25 +634,33 @@ class DockerManager:
 
         # ── Step 3: start ────────────────────────────────────────────────
         try:
-            container.start()
-        except (ChannelException, SSHException) as e:
-            log.warning(f"[DockerManager] SSH dropped during container.start(): {e}")
-            self._reconnect_node(node)
+            self._node_call(node, lambda c: _fetch_container(c).start())
+        except _TRANSPORT_ERRORS as e:
+            log.warning(f"[DockerManager] Transport error after retries during container.start(): {e}")
             existing = self.get_container_by_token(token)
             if existing:
                 self._container_cache.add(CachedContainer.from_docker(existing, node.address))
                 return token
-            container.remove(force=True)
+            try:
+                self._node_call(node, lambda c: _fetch_container(c).remove(force=True))
+            except Exception:
+                pass
             if expose_port:
                 self.ports_manager.release_port(token)
             raise
         except Exception:
-            container.remove(force=True)
+            try:
+                self._node_call(node, lambda c: _fetch_container(c).remove(force=True))
+            except Exception:
+                pass
             if expose_port:
                 self.ports_manager.release_port(token)
             raise
 
-        container.reload()
+        try:
+            container = self._node_call(node, lambda c: c.containers.get(container_id))
+        except Exception:
+            pass
         self._container_cache.add(CachedContainer.from_docker(container, node.address))
         return token
 
@@ -652,8 +790,10 @@ class DockerManager:
         container = self.get_container_by_token(token)
         if not container:
             return False
+        node = self._find_node_for_container(container) or self.nodes[0]
+        cid = container.id
         try:
-            container.stop()
+            self._node_call(node, lambda c: c.containers.get(cid).stop())
             self._container_cache.update_status(token, "exited")
             return True
         except Exception:
@@ -674,8 +814,9 @@ class DockerManager:
         if challenge_id and team_id and node:
             self._get_or_create_network(node, challenge_id, team_id)
 
+        cid = container.id
         try:
-            container.start()
+            self._node_call(node or self.nodes[0], lambda c: c.containers.get(cid).start())
         except Exception as e:
             log.error(f"[DockerManager] Failed to start container {token}: {e}")
             return False
@@ -695,9 +836,13 @@ class DockerManager:
         challenge_id = container.labels.get(DockerLabels.CHALLENGE)
         team_id = container.labels.get(DockerLabels.TEAM)
         owning_node = self._find_node_for_container(container)
+        cid = container.id
 
         try:
-            container.remove(force=True)
+            self._node_call(
+                owning_node or self.nodes[0],
+                lambda c: c.containers.get(cid).remove(force=True),
+            )
             self._container_cache.remove(token)
             self.ports_manager.release_port(token)
             if challenge_id and owning_node:
@@ -708,23 +853,45 @@ class DockerManager:
             return False
 
     def delete_all(self) -> int:
-        containers = self._query_containers(
-            all=True,
-            filters={"label": [f"{DockerLabels.CTFD}=true"]},
-        )
+        """
+        Remove every CTFd-labelled container on every node.
+
+        Uses a per-node mapping so each container.remove() goes through that
+        node's ssh_semaphore — without this, concurrent calls across many
+        containers on a single node would blow past sshd's MaxSessions.
+        """
         removed = 0
-        for container in containers:
+
+        for node in self.nodes:
             try:
-                token = container.labels.get(DockerLabels.TOKEN)
-                if token:
-                    self.timer_timeout.cancel(token)
-                    self.timer_kill.cancel(token)
-                container.remove(force=True)
-                if token:
-                    self.ports_manager.release_port(token)
-                removed += 1
+                containers = self._node_call(
+                    node,
+                    lambda c: c.containers.list(
+                        all=True,
+                        filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                    ),
+                )
             except Exception as e:
-                log.error(f"Failed removing container {container.id[:12]}: {e}")
+                log.error(f"[DockerManager] delete_all: list failed on {node}: {e}")
+                continue
+
+            for container in containers:
+                cid = container.id
+                try:
+                    token = container.labels.get(DockerLabels.TOKEN)
+                    if token:
+                        self.timer_timeout.cancel(token)
+                        self.timer_kill.cancel(token)
+                    self._node_call(
+                        node,
+                        lambda c, _cid=cid: c.containers.get(_cid).remove(force=True),
+                    )
+                    if token:
+                        self.ports_manager.release_port(token)
+                    removed += 1
+                except Exception as e:
+                    log.error(f"Failed removing container {cid[:12]}: {e}")
+
         self._container_cache.clear()
         self._purge_challenge_networks()
         return removed
@@ -780,7 +947,7 @@ class DockerManager:
             node.containers = []
             log.info(f"Updating stats for {node}...")
             try:
-                info = self._node_call(node, node.client.info)
+                info = self._node_call(node, lambda c: c.info())
             except Exception as e:
                 log.error(f"[DockerManager] update_nodes_details failed for {node}: {e}")
                 continue
@@ -809,11 +976,14 @@ class DockerManager:
         print(f"\n{sep}\n{header}\n{sep}")
         totals = [0, 0, 0, 0, 0]
         for node in self.nodes:
-            info = self._node_call(node, node.client.info)
+            info = self._node_call(node, lambda c: c.info())
             mem_total = int(info.get("MemTotal", 0))
             containers = self._node_call(
-                node, node.client.containers.list, all=True,
-                filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                node,
+                lambda c: c.containers.list(
+                    all=True,
+                    filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                ),
             )
             running = sum(1 for c in containers if c.status == "running")
             exited  = sum(1 for c in containers if c.status != "running")

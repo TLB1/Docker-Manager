@@ -127,11 +127,22 @@ def save_config():
     data = request.get_json()
     save_runtime_config(data)
 
+    old_store = getattr(current_app, "metrics_store", None)
+    if old_store is not None:
+        try:
+            old_store.stop()
+        except Exception:
+            pass
+
     dm = DockerManager(RuntimeConfig.WORKER_NODES)
     current_app.docker_manager = dm
     dm.update_nginx_data()
     dm.delete_all()
     dm.print_nodes_table()
+    dm.update_nodes_details()
+
+    current_app.metrics_store = MetricsStore()
+    current_app.metrics_store.start(dm.nodes)
 
     return {"success": True}
 
@@ -289,6 +300,13 @@ def api_metrics_history():
 def load(app):
     app.register_blueprint(admin_docker)
     load_runtime_config()
+
+    old_store = getattr(app, "metrics_store", None)
+    if old_store is not None:
+        try:
+            old_store.stop()
+        except Exception:
+            pass
 
     app.docker_manager  = DockerManager(RuntimeConfig.WORKER_NODES)
     app.metrics_store   = MetricsStore()

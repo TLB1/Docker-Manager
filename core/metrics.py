@@ -230,6 +230,19 @@ class MetricsStore:
 
     def stop(self) -> None:
         self._stop_evt.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=RuntimeConfig.METRICS_POLL_INTERVAL + 2)
+        for cfg in self._nodes:
+            try:
+                cfg.docker.close()
+            except Exception:
+                pass
+            if cfg.ssh:
+                try:
+                    cfg.ssh.close()
+                except Exception:
+                    pass
+        self._nodes = []
 
     # ---------------------------------------------------------------- #
     # Public read API (all non-blocking)                                 #
@@ -276,7 +289,16 @@ class MetricsStore:
         try:
             if node.address == "localhost":
                 return DockerClient.from_env()
-            return DockerClient(base_url=f"ssh://{node.name}@{node.address}")
+            client = DockerClient(base_url=f"ssh://{node.name}@{node.address}")
+            try:
+                adapter = client.api.get_adapter(client.api.base_url)
+                ssh_client = getattr(adapter, "ssh_client", None)
+                transport = ssh_client.get_transport() if ssh_client else None
+                if transport is not None:
+                    transport.set_keepalive(30)
+            except Exception as e:
+                log.debug("[Metrics] Could not set keepalive on %s: %s", node.address, e)
+            return client
         except Exception as e:
             log.error("[Metrics] Cannot create Docker client for %s: %s", node.address, e)
             return None

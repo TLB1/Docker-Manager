@@ -1,5 +1,8 @@
+import threading
+
 from docker import DockerClient
 from .container import ContainerDetails
+from ..core.config import RuntimeConfig
 
 
 class Node:
@@ -11,6 +14,9 @@ class Node:
         self.client: DockerClient = client
         self.stats: NodeStats = NodeStats()
         self.containers: list[ContainerDetails] = containers
+        self.ssh_semaphore: threading.BoundedSemaphore = threading.BoundedSemaphore(
+            RuntimeConfig.NODE_SSH_MAX_CONCURRENCY
+        )
 
     def __repr__(self):
         return f"Node({self.name}@{self.address}:{self.port})"

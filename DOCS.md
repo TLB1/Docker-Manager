@@ -29,7 +29,7 @@
 
 ## Overview
 
-Docker-Manager is a CTFd plugin that provides enterprise-grade Docker container orchestration for hosting dynamic CTF challenges. Each team gets their own isolated container environment, provisioned on-demand from Docker images, and accessible via a per-challenge URL or TCP port.
+Docker-Manager is a CTFd plugin that provides Docker container orchestration for hosting dynamic CTF challenges. Each team gets their own isolated container environment, provisioned on-demand from Docker images, and accessible via a per-challenge URL or TCP port.
 
 Key capabilities:
 
@@ -48,13 +48,13 @@ Key capabilities:
 ┌─────────────────────────────────────────────────────────┐
 │                      CTFd Host                          │
 │                                                         │
-│  ┌─────────────────┐    ┌──────────────────────────┐   │
-│  │   CTFd App      │    │   ctfd-nginx-proxy       │   │
-│  │  (Flask/Python) │    │   (nginx:stable-alpine)  │   │
-│  │                 │    │                          │   │
-│  │  Docker-Manager │    │  :80/:443 HTTP proxy     │   │
-│  │  Plugin         │    │  :10000-10100 TCP proxy  │   │
-│  └────────┬────────┘    └──────────────────────────┘   │
+│  ┌─────────────────┐    ┌──────────────────────────┐    │
+│  │   CTFd App      │    │   ctfd-nginx-proxy       │    │
+│  │  (Flask/Python) │    │   (nginx:stable-alpine)  │    │
+│  │                 │    │                          │    │
+│  │  Docker-Manager │    │  :80/:443 HTTP proxy     │    │
+│  │  Plugin         │    │  :10000-10100 TCP proxy  │    │
+│  └────────┬────────┘    └──────────────────────────┘    │
 │           │ SSH                                         │
 └───────────┼─────────────────────────────────────────────┘
             │

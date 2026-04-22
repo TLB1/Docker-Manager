@@ -1,4 +1,4 @@
-# Docker-Manager Plugin — Reference Documentation
+# Docker-Manager Plugin - Reference Documentation
 
 **Version:** 0.1.0  
 **License:** MIT  

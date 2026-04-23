@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import docker
 import requests.exceptions
 from docker import DockerClient
-from docker.errors import APIError
+from docker.errors import APIError, NotFound
 from docker.models.containers import Container
 from docker.types import IPAMPool
 from paramiko.ssh_exception import ChannelException, SSHException
@@ -835,22 +835,45 @@ class DockerManager:
 
         challenge_id = container.labels.get(DockerLabels.CHALLENGE)
         team_id = container.labels.get(DockerLabels.TEAM)
-        owning_node = self._find_node_for_container(container)
         cid = container.id
 
-        try:
-            self._node_call(
-                owning_node or self.nodes[0],
-                lambda c: c.containers.get(cid).remove(force=True),
+        owning_node = self._find_node_for_container(container)
+        candidates: List[Node] = [owning_node] if owning_node else []
+        for n in self.nodes:
+            if n not in candidates:
+                candidates.append(n)
+
+        removed_on: Optional[Node] = None
+        last_error: Optional[Exception] = None
+        for node in candidates:
+            try:
+                self._node_call(
+                    node,
+                    lambda c: c.containers.get(cid).remove(force=True),
+                )
+                removed_on = node
+                break
+            except NotFound:
+                continue
+            except Exception as e:
+                last_error = e
+                continue
+
+        if removed_on is None:
+            log.warning(
+                f"[DockerManager] Failed to remove container {token} on any node "
+                f"(last error: {last_error}); rescheduling kill in 60s."
             )
-            self._container_cache.remove(token)
-            self.ports_manager.release_port(token)
-            if challenge_id and owning_node:
-                self._cleanup_challenge_network(owning_node, challenge_id, team_id)
-            return True
-        except Exception as e:
-            log.warning(f"[DockerManager] Failed to remove container {token}: {e}")
+            self.timer_kill.startOrRenew(
+                token, 60, lambda: self.remove_container(token)
+            )
             return False
+
+        self._container_cache.remove(token)
+        self.ports_manager.release_port(token)
+        if challenge_id:
+            self._cleanup_challenge_network(removed_on, challenge_id, team_id)
+        return True
 
     def delete_all(self) -> int:
         """

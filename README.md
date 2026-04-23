@@ -37,8 +37,8 @@
 <img height="250" alt="image" src="https://github.com/user-attachments/assets/0c031da3-5c26-453a-ba0b-e7fd8f67635f" />
 
 ## Plugin installation
-Go to `CTFd/CTFd/plugins/` and clone the plugin in the folder and start the installer script.
-```bash
+Go to `CTFd/CTFd/plugins/`, clone the plugin in the folder and start the installer script.
+```bash  
 git clone https://github.com/TLB1/Docker-Manager.git
 cd Docker-Manager
 ./install.sh

@@ -610,6 +610,12 @@ class DockerManager:
                 return container
 
         # ── Step 2: connect to the challenge network with alias ──────────
+        # containers.create() with no `network` kwarg attaches the container
+        # to Docker's default `bridge` network. Calling connect() then ADDS
+        # the challenge network on top — it does not replace the default
+        # attachment, so without the disconnect below every container would
+        # sit on both networks and challenges could reach each other via
+        # the shared default bridge.
         if network_name:
             try:
                 self._node_call(
@@ -631,6 +637,24 @@ class DockerManager:
                 raise RuntimeError(
                     f"Could not connect container to network {network_name}: {e}"
                 ) from e
+
+            try:
+                self._node_call(
+                    node,
+                    lambda c: c.networks.get("bridge").disconnect(_fetch_container(c)),
+                )
+            except NotFound:
+                pass
+            except APIError as e:
+                # 403 = container not connected to bridge (already isolated).
+                if e.status_code != 403:
+                    log.warning(
+                        f"[DockerManager] Could not detach {token} from default bridge: {e}"
+                    )
+            except Exception as e:
+                log.warning(
+                    f"[DockerManager] Could not detach {token} from default bridge: {e}"
+                )
 
         # ── Step 3: start ────────────────────────────────────────────────
         try:

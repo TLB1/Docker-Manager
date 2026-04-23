@@ -1,6 +1,10 @@
 [
     {
-        "name": "Docker Manager",
+        "name": "Docker Monitoring",
+        "route": "/admin/docker_manager/monitoring"
+    },
+    {
+        "name": "Docker Settings",
         "route": "/admin/docker_manager"
     }
 ]

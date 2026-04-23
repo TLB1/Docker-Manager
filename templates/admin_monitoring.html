@@ -13,8 +13,6 @@
       <div class="d-flex align-items-center gap-3 mt-2">
         <span class="badge bg-secondary" id="status-badge">Connecting…</span>
         <small class="text-muted" id="last-updated"></small>
-        <a href="{{ url_for('admin_docker_manager.nodes_dashboard') }}"
-           class="btn btn-sm btn-outline-secondary">&#8592; Nodes</a>
       </div>
     </div>
   </div>
@@ -61,7 +59,7 @@
           <th>Image</th>
           <th style="width:90px;">CPU %</th>
           <th style="width:180px;">Memory</th>
-          <th style="width:90px;"></th>
+          <th style="width:160px;"></th>
         </tr>
       </thead>
       <tbody id="container-tbody">
@@ -99,6 +97,10 @@
       data-csrf="{{ Session.nonce }}"
       data-metrics-url="{{ url_for('admin_docker_manager.api_current_metrics') }}"
       data-history-url="{{ url_for('admin_docker_manager.api_metrics_history') }}"
+      data-suspend-url="{{ url_for('admin_docker_manager.suspend_container') }}"
+      data-resume-url="{{ url_for('admin_docker_manager.resume_container') }}"
+      data-delete-url="{{ url_for('admin_docker_manager.delete_container') }}"
+      data-domain="{{ domain }}"
       style="display:none;"></span>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>

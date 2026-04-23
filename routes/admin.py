@@ -220,7 +220,7 @@ def resume_container():
 @admin_docker.route("/admin/docker_manager/monitoring", methods=["GET"])
 @admins_only
 def monitoring_dashboard():
-    return render_template("admin_monitoring.html")
+    return render_template("admin_monitoring.html", domain=RuntimeConfig.CTFD_DOMAIN_NAME)
 
 
 @admin_docker.route("/admin/docker_manager/api/metrics", methods=["GET"])

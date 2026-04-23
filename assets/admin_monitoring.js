@@ -8,6 +8,14 @@ const _meta       = document.getElementById("monitor-meta");
 const CSRF        = _meta.dataset.csrf;
 const METRICS_URL = _meta.dataset.metricsUrl;
 const HISTORY_URL = _meta.dataset.historyUrl;
+const SUSPEND_URL = _meta.dataset.suspendUrl;
+const RESUME_URL  = _meta.dataset.resumeUrl;
+const DELETE_URL  = _meta.dataset.deleteUrl;
+const DOMAIN      = _meta.dataset.domain;
+
+function containerUrl(token) {
+  return `http://${token}.${DOMAIN}:8008/`;
+}
 
 const METRICS_INTERVAL_MS = 10_000;   // 10 s  – node cards + container table
 const HISTORY_INTERVAL_MS = 30_000;   // 30 s  – Chart.js graphs
@@ -55,6 +63,53 @@ async function apiFetch(url) {
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.json();
+}
+
+async function apiPost(url, body) {
+  return fetch(url, {
+    method:      "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      "CSRF-Token":   CSRF,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function deleteContainer(token, btn) {
+  if (!confirm("Delete this container? This cannot be undone.")) return;
+  const resp = await apiPost(DELETE_URL, { token });
+  if (resp.ok || resp.redirected) {
+    const row = btn.closest("tr");
+    if (row) row.remove();
+    pollMetrics();
+  } else {
+    alert("Failed to delete container");
+  }
+}
+
+async function suspendContainer(token, btn) {
+  if (!confirm("Suspend this container?")) return;
+  const resp = await apiPost(SUSPEND_URL, { token });
+  if (resp.ok) {
+    const row = btn.closest("tr");
+    if (row) row.style.opacity = 0.5;
+    pollMetrics();
+  } else {
+    alert("Suspend failed");
+  }
+}
+
+async function resumeContainer(token, btn) {
+  const resp = await apiPost(RESUME_URL, { token });
+  if (resp.ok) {
+    const row = btn.closest("tr");
+    if (row) row.style.opacity = 0.5;
+    pollMetrics();
+  } else {
+    alert("Resume failed");
+  }
 }
 
 // ------------------------------------------------------------------ //
@@ -163,6 +218,12 @@ function renderCharts(data) {
               <canvas id="chart-cpu-${sid}" height="80"></canvas>
               <p class="small text-muted mt-3 mb-1">Active Containers</p>
               <canvas id="chart-ctr-${sid}" height="70"></canvas>
+              <hr class="my-2">
+              <div class="d-flex align-items-center">
+                <span id="node-dot-${sid}"
+                      style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#6c757d;margin-right:8px;"></span>
+                <small class="text-muted" id="node-counts-${sid}"></small>
+              </div>
             </div>
           </div>
         </div>`;
@@ -285,6 +346,17 @@ function updateContainerTable() {
       ? Math.round((c.mem_usage_mb / c.mem_limit_mb) * 100) : 0;
     const memBarCls  = memPct > 85 ? "bg-danger" : memPct > 65 ? "bg-warning" : "bg-primary";
 
+    const tokenAttr = esc(c.token);
+    const pauseBtn = isRunning
+      ? `<button type="button" class="btn btn-sm btn-outline-warning" title="Suspend"
+                 onclick="suspendContainer('${tokenAttr}', this)">❚❚</button>`
+      : `<button type="button" class="btn btn-sm btn-outline-success" title="Resume"
+                 onclick="resumeContainer('${tokenAttr}', this)">▶</button>`;
+    const goBtn = isRunning
+      ? `<a href="${esc(containerUrl(c.token))}" target="_blank"
+            class="btn btn-sm btn-primary">Go</a>`
+      : `<button class="btn btn-sm btn-secondary" disabled>Go</button>`;
+
     return `
       <tr>
         <td>
@@ -302,9 +374,12 @@ function updateContainerTable() {
           <small class="text-muted">${c.mem_usage_mb.toFixed(0)} / ${c.mem_limit_mb.toFixed(0)} MB</small>
         </td>
         <td>
-          <a href="/admin/docker_manager/nodes"
-             class="btn btn-sm btn-outline-secondary"
-             style="font-size:0.75rem;padding:2px 8px;">Manage</a>
+          <div class="d-flex gap-1 justify-content-end">
+            <button type="button" class="btn btn-sm btn-outline-danger" title="Delete"
+                    onclick="deleteContainer('${tokenAttr}', this)">✕</button>
+            ${pauseBtn}
+            ${goBtn}
+          </div>
         </td>
       </tr>`;
   }).join("");
@@ -350,10 +425,23 @@ document.getElementById("clear-log-btn").addEventListener("click", () => {
 // Poll loops                                                           //
 // ------------------------------------------------------------------ //
 
+function updateNodeCounts(nodes) {
+  (nodes || []).forEach(n => {
+    const sid      = safeId(n.address);
+    const dot      = document.getElementById(`node-dot-${sid}`);
+    const counts   = document.getElementById(`node-counts-${sid}`);
+    const running  = n.running_count || 0;
+    const suspended = n.exited_count || 0;
+    if (dot)    dot.style.background = running > 0 ? "#28a745" : "#6c757d";
+    if (counts) counts.textContent = `${running} running · ${suspended} suspended`;
+  });
+}
+
 async function pollMetrics() {
   try {
     const data = await apiFetch(METRICS_URL);
     renderContainerTable(data.containers);
+    updateNodeCounts(data.nodes);
     renderEvents(data.events || []);
     setStatus(true);
     setLastUpdated();

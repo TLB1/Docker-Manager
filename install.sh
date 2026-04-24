@@ -190,8 +190,8 @@ services["ctfd-nginx-proxy"] = {
         "./CTFd/plugins/Docker-Manager/nginx/nginx.conf:/etc/nginx/nginx.conf:ro",
         "proxy_data:/etc/nginx/data",
     ],
-    "ports":      ["8008:8008", "10000-10100:10000-10100"],
-    "depends_on": ["ctfd"],
+    "network_mode": "host",
+    "depends_on":   ["ctfd"],
 }
 
 if "ctfd" not in services:
@@ -222,6 +222,50 @@ print("  Patched ctfd service (group_add + volumes)")
 PYEOF
 
 success "docker-compose.yml patched"
+
+# ── Patch nginx.conf resolver with host DNS ──────────────────
+step "Configuring nginx resolver from host DNS"
+
+NGINX_CONF="$NGINX_DIR/nginx.conf"
+
+# Real upstream nameservers from /etc/resolv.conf (skip loopback stubs
+# like systemd-resolved's 127.0.0.53 — those aren't useful as an nginx
+# runtime resolver even in host mode).
+mapfile -t HOST_NS < <(awk '/^nameserver / {print $2}' /etc/resolv.conf 2>/dev/null \
+                       | grep -vE '^(127\.|::1$)' || true)
+
+# Fallback: ask systemd-resolved for the real upstream
+if [[ ${#HOST_NS[@]} -eq 0 ]] && command -v resolvectl &>/dev/null; then
+    mapfile -t HOST_NS < <(resolvectl status 2>/dev/null \
+        | awk '/Current DNS Server:/ {print $4}' \
+        | grep -vE '^(127\.|::1$)' || true)
+fi
+
+# Last-resort public fallback
+if [[ ${#HOST_NS[@]} -eq 0 ]]; then
+    warn "Could not detect host DNS – falling back to 1.1.1.1 8.8.8.8"
+    HOST_NS=(1.1.1.1 8.8.8.8)
+fi
+
+RESOLVER_LINE="${HOST_NS[*]}"
+info "Using resolver: $RESOLVER_LINE"
+
+python3 - "$NGINX_CONF" "$RESOLVER_LINE" <<'PYEOF'
+import sys, re, pathlib
+path     = pathlib.Path(sys.argv[1])
+resolver = sys.argv[2]
+text     = path.read_text()
+# Only the bare 'resolver' directive — 'resolver_timeout' starts with
+# an underscore and is not matched by \s+.
+new, n   = re.subn(r'resolver\s+[^;]+;',
+                   f'resolver {resolver} valid=30s ipv6=off;',
+                   text)
+if n == 0:
+    sys.exit("ERROR: no resolver directive found in nginx.conf")
+path.write_text(new)
+print(f"  Replaced {n} resolver directive(s)")
+PYEOF
+success "nginx.conf resolver updated"
 
 # ── Node setup ───────────────────────────────────────────────
 setup_node() {

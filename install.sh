@@ -154,7 +154,11 @@ fi
 # ── Patch docker-compose.yml ─────────────────────────────────
 step "Patching docker-compose.yml"
 
-python3 - "$COMPOSE_FILE" <<'PYEOF'
+DOCKER_GID="$(getent group docker | cut -d: -f3)"
+[[ -n "$DOCKER_GID" ]] || error "'docker' group not found on this host – install Docker or create the group first"
+info "Detected docker group GID: $DOCKER_GID"
+
+python3 - "$COMPOSE_FILE" "$DOCKER_GID" <<'PYEOF'
 import sys, pathlib
 
 try:
@@ -163,6 +167,7 @@ except ImportError:
     sys.exit("ERROR: PyYAML missing – run: pip3 install pyyaml")
 
 compose_path = pathlib.Path(sys.argv[1])
+docker_gid   = int(sys.argv[2])
 text         = compose_path.read_text()
 
 if "ctfd-nginx-proxy" in text:
@@ -195,9 +200,9 @@ if "ctfd" not in services:
 ctfd = services["ctfd"]
 
 if "group_add" not in ctfd or ctfd["group_add"] is None:
-    ctfd["group_add"] = [989]
-elif 989 not in ctfd["group_add"]:
-    ctfd["group_add"].append(989)
+    ctfd["group_add"] = [docker_gid]
+elif docker_gid not in ctfd["group_add"]:
+    ctfd["group_add"].append(docker_gid)
 
 new_vols = [
     "proxy_data:/opt/CTFd/CTFd/plugins/Docker-Manager/nginx/data",

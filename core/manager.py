@@ -138,6 +138,33 @@ class DockerManager:
         self._network_locks: dict[tuple, threading.Lock] = {}
         self._network_locks_lock = threading.Lock()
 
+        # Rearm timers for any ctfd-labelled containers already present. This
+        # is a no-op in the common case because load() calls delete_all right
+        # after __init__, but if delete_all fails on a specific container
+        # (e.g. transient SSH error on one node) the survivor would otherwise
+        # be left without a kill timer and linger forever. set_timers uses
+        # absolute durations, so each survivor gets a fresh suspension + kill
+        # cycle rather than inheriting stale timestamps.
+        self._rearm_existing_timers()
+
+    def _rearm_existing_timers(self):
+        for node in self.nodes:
+            try:
+                containers = self._node_call(
+                    node,
+                    lambda c: c.containers.list(
+                        all=True,
+                        filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                    ),
+                )
+            except Exception as e:
+                log.warning(f"[DockerManager] rearm: list failed on {node}: {e}")
+                continue
+            for container in containers:
+                token = container.labels.get(DockerLabels.TOKEN)
+                if token:
+                    self.set_timers(token)
+
     # ------------------------------------------------------------------ #
     # Nginx                                                                #
     # ------------------------------------------------------------------ #
@@ -850,10 +877,44 @@ class DockerManager:
         return True
 
     def remove_container(self, token: str) -> bool:
-        container = self.get_container_by_token(token)
-        if not container:
+        # Inline the lookup so we can tell "container is genuinely gone" apart
+        # from "at least one node failed to answer". The old get_container_by_token
+        # path swallowed per-node transport errors and returned None, so a
+        # transient SSH blip at kill-time would drop the timer and leak the
+        # container forever.
+        container: Optional[Container] = None
+        owning_node: Optional[Node] = None
+        any_query_failed = False
+        for node in self.nodes:
+            try:
+                containers = self._node_call(
+                    node,
+                    lambda c: c.containers.list(
+                        all=True,
+                        filters={"label": [f"{DockerLabels.TOKEN}={token}"]},
+                    ),
+                )
+                if containers and container is None:
+                    container = containers[0]
+                    owning_node = node
+            except Exception as e:
+                log.warning(f"[DockerManager] remove_container lookup on {node} failed: {e}")
+                any_query_failed = True
+
+        if container is None:
+            if any_query_failed:
+                log.warning(
+                    f"[DockerManager] remove_container({token}): lookup inconclusive; "
+                    f"rescheduling kill in 60s."
+                )
+                self.timer_kill.startOrRenew(
+                    token, 60, lambda: self.remove_container(token)
+                )
             return False
 
+        # Only cancel timers once we've confirmed the container exists. If we
+        # cancelled on an inconclusive lookup we'd throw away the kill timer
+        # for a container we couldn't actually verify was gone.
         self.timer_timeout.cancel(token)
         self.timer_kill.cancel(token)
 
@@ -861,8 +922,7 @@ class DockerManager:
         team_id = container.labels.get(DockerLabels.TEAM)
         cid = container.id
 
-        owning_node = self._find_node_for_container(container)
-        candidates: List[Node] = [owning_node] if owning_node else []
+        candidates: List[Node] = [owning_node]
         for n in self.nodes:
             if n not in candidates:
                 candidates.append(n)

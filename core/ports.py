@@ -24,11 +24,7 @@ class TcpPortMapping:
 
 class PortsManager:
     def __init__(
-        self,
-        port_range_start: int = RuntimeConfig.INTERNAL_PORT_RANGE_START,
-        port_range_end: int   = RuntimeConfig.INTERNAL_PORT_RANGE_END,
-        tcp_range_start: int  = RuntimeConfig.TCP_PORT_RANGE_START,
-        tcp_range_end: int    = RuntimeConfig.TCP_PORT_RANGE_END,
+        self
     ):
         # ── Node-side host ports (HTTP range) ─────────────────────────
         # Used for ALL Docker port bindings: both HTTP and TCP container
@@ -36,16 +32,12 @@ class PortsManager:
         #
         # Key:   token          → primary HTTP port   (existing behaviour)
         #        "token:N"      → extra port for container port N
-        self.port_range_start = port_range_start
-        self.port_range_end   = port_range_end
         self.allocated_ports: dict[str, tuple[str, int]] = {}
         # token → (node_addr, node_host_port)
 
         # ── CTFd-side TCP ports ───────────────────────────────────────
         # One entry per non-HTTP port mapping across all containers.
         # Key: token  →  list[TcpPortMapping]
-        self.tcp_range_start = tcp_range_start
-        self.tcp_range_end   = tcp_range_end
         self.tcp_mappings: dict[str, list[TcpPortMapping]] = {}
 
     # ------------------------------------------------------------------ #
@@ -65,7 +57,7 @@ class PortsManager:
         Stores under the plain token key — the existing contract for nginx/backend lookup.
         """
         used = self._used_node_ports(server_url)
-        for port in range(self.port_range_start, self.port_range_end):
+        for port in range(RuntimeConfig.INTERNAL_PORT_RANGE_START, RuntimeConfig.INTERNAL_PORT_RANGE_END):
             if port not in used:
                 self.allocated_ports[token] = (server_url, port)
                 print(f"http://{token}.{RuntimeConfig.CTFD_DOMAIN_NAME}:8008/")
@@ -84,7 +76,7 @@ class PortsManager:
         """
         key  = f"{token}:{container_port}"
         used = self._used_node_ports(server_url)
-        for port in range(self.port_range_start, self.port_range_end):
+        for port in range(RuntimeConfig.INTERNAL_PORT_RANGE_START, RuntimeConfig.INTERNAL_PORT_RANGE_END):
             if port not in used:
                 self.allocated_ports[key] = (server_url, port)
                 return port
@@ -118,7 +110,7 @@ class PortsManager:
         Returns the allocated CTFd TCP port number.
         """
         used = self._used_ctfd_tcp_ports()
-        for port in range(self.tcp_range_start, self.tcp_range_end):
+        for port in range(RuntimeConfig.TCP_PORT_RANGE_START, RuntimeConfig.TCP_PORT_RANGE_END):
             if port not in used:
                 mapping = TcpPortMapping(
                     ctfd_tcp_port=port,

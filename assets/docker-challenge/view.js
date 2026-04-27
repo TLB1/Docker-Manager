@@ -39,19 +39,26 @@
    * Rendering
    * ───────────────────────────────────────────────────────────────────── */
 
-  function renderActionBar(containers) {
+  function renderActionBar(containers, isGlobal) {
     const $bar    = $("#docker-action-bar");
     const exists  = containers.some(c => c.exists);
     const someStop = exists && containers.some(c => c.exists && c.status !== "running");
 
     let html = "";
     if (!exists) {
-      html += `<button id="docker-start" class="btn btn-primary">Start</button>`;
+      const startLabel = "Start";
+      html += `<button id="docker-start" class="btn btn-primary">${startLabel}</button>`;
     } else {
       if (someStop)
         html += `<button id="docker-resume" class="btn btn-warning me-1">Resume</button>`;
-      html += `<button id="docker-stop"  class="btn btn-secondary me-1">Stop</button>`;
-      html += `<button id="docker-reset" class="btn btn-danger">Reset</button>`;
+      // Global containers are shared — players cannot stop or reset them.
+      if (!isGlobal) {
+        html += `<button id="docker-stop"  class="btn btn-secondary me-1">Stop</button>`;
+        html += `<button id="docker-reset" class="btn btn-danger">Reset</button>`;
+      }
+    }
+    if (isGlobal) {
+      html += `<span class="badge bg-info ms-2">Shared by all players</span>`;
     }
     html += `<span id="docker-msg" class="ms-2 small"></span>`;
     $bar.html(html);
@@ -122,8 +129,8 @@
     );
   }
 
-  function renderAll(containers) {
-    renderActionBar(containers);
+  function renderAll(containers, isGlobal) {
+    renderActionBar(containers, isGlobal);
     renderCards(containers);
 
     const exists  = containers.some(c => c.exists);
@@ -164,7 +171,7 @@
     apiGet(`/docker/api/challenge/${challenge_id}/status`)
       .then(resp => {
         if (!resp?.success) { setMsg(resp?.error || "Cannot get status", true); return; }
-        renderAll(resp.containers || []);
+        renderAll(resp.containers || [], !!resp.is_global);
       })
       .catch(() => setMsg("Error checking container status", true));
   }
@@ -235,7 +242,7 @@
           if (!resp?.success) { pollUntilAllRunning(challenge_id, attemptsLeft - 1); return; }
 
           const containers = resp.containers || [];
-          renderAll(containers);
+          renderAll(containers, !!resp.is_global);
 
           const allRunning = containers.length > 0 &&
                              containers.every(c => c.exists && c.status === "running");

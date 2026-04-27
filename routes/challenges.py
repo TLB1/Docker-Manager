@@ -36,6 +36,22 @@ def get_team_or_user():
     return get_current_user()
 
 
+# Sentinel "actor" name used for global (shared) challenge containers so that
+# every player ends up looking at the same Docker container set.
+GLOBAL_ACTOR_NAME = "<Global>"
+
+
+def _actor_name_for(challenge, actor):
+    """Return the actor name to use for container lookup/creation.
+
+    For challenges flagged as global, all players share a single container set
+    keyed off a fixed sentinel name; otherwise we key off the team/user.
+    """
+    if getattr(challenge, "is_global", False):
+        return GLOBAL_ACTOR_NAME
+    return actor.name
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -214,13 +230,15 @@ def api_docker_status(challenge_id):
         return jsonify({"success": False, "error": "Challenge not found"}), 404
 
     configs = _get_ordered_configs(challenge_id)
-    containers = _container_status_list(manager, actor.name, challenge_id, configs)
+    actor_name = _actor_name_for(challenge, actor)
+    containers = _container_status_list(manager, actor_name, challenge_id, configs)
 
     return jsonify({
         "success": True,
         "containers": containers,
         # Convenience: overall "exists" is True if at least one container is up
         "exists": any(c["exists"] for c in containers),
+        "is_global": bool(challenge.is_global),
     })
 
 
@@ -242,8 +260,18 @@ def api_docker_start(challenge_id):
     if not configs:
         return jsonify({"success": False, "error": "No containers configured for this challenge"}), 400
 
+    actor_name = _actor_name_for(challenge, actor)
+
+    # For global challenges, if any container already exists, just report
+    # success — every player shares the same container set, so a second
+    # "Start" is a no-op rather than a quota-exceeding duplicate.
+    if challenge.is_global:
+        existing = _container_status_list(manager, actor_name, challenge_id, configs)
+        if any(c["exists"] for c in existing):
+            return jsonify({"success": True, "containers": existing})
+
     try:
-        results = _start_all_containers(manager, actor.name, challenge_id, configs,
+        results = _start_all_containers(manager, actor_name, challenge_id, configs,
                                         use_network=challenge.use_challenge_network)
         return jsonify({"success": True, "containers": results})
     except Exception as e:
@@ -266,12 +294,13 @@ def api_docker_resume(challenge_id):
         return jsonify({"success": False, "error": "Challenge not found"}), 404
 
     configs = _get_ordered_configs(challenge_id)
+    actor_name = _actor_name_for(challenge, actor)
     resumed = []
     errors = []
 
     for cfg in configs:
         container = manager.get_container_for_team_challenge(
-            actor.name, challenge_id, container_index=cfg.container_index
+            actor_name, challenge_id, container_index=cfg.container_index
         )
         if not container:
             errors.append(f"No container for index {cfg.container_index}")
@@ -356,6 +385,12 @@ def api_docker_stop(challenge_id):
     if not challenge:
         return jsonify({"success": False, "error": "Challenge not found"}), 404
 
+    if challenge.is_global:
+        return jsonify({
+            "success": False,
+            "error": "This challenge uses a shared global container that cannot be stopped.",
+        }), 403
+
     configs = _get_ordered_configs(challenge_id)
     _remove_all_containers(manager, actor.name, challenge_id, configs)
     return jsonify({"success": True, "stopped": True})
@@ -374,6 +409,12 @@ def api_docker_reset(challenge_id):
     challenge = DockerImageChallengeModel.query.get(challenge_id)
     if not challenge:
         return jsonify({"success": False, "error": "Challenge not found"}), 404
+
+    if challenge.is_global:
+        return jsonify({
+            "success": False,
+            "error": "This challenge uses a shared global container that cannot be reset.",
+        }), 403
 
     configs = _get_ordered_configs(challenge_id)
     if not configs:
@@ -746,6 +787,10 @@ class DockerImageChallengeModel(Challenges):
     # so they can reach each other by hostname.  Set to False for single-
     # container challenges that don't need inter-container communication.
     use_challenge_network = db.Column(db.Boolean, nullable=False, default=True, server_default="1")
+    # When True, every player shares one global container set for this
+    # challenge instead of getting their own. Players can start it (when not
+    # already running) but cannot stop or reset it.
+    is_global = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
 
 
 # ---------------------------------------------------------------------------
@@ -781,10 +826,12 @@ class DockerImageChallenge(BaseChallenge):
         # Pull out our fields before they reach the SQLAlchemy constructor.
         raw_json = data.pop("docker_containers_json", "[]")
         use_network_raw = data.pop("use_challenge_network", None)
+        is_global_raw = data.pop("is_global", None)
 
         challenge = cls.challenge_model(**data)
         # HTML checkboxes send "on" when checked and nothing when unchecked.
         challenge.use_challenge_network = use_network_raw not in (None, "", "false", "0", "off")
+        challenge.is_global = is_global_raw not in (None, "", "false", "0", "off")
         db.session.add(challenge)
         db.session.commit()
 
@@ -821,6 +868,7 @@ class DockerImageChallenge(BaseChallenge):
         data["docker_image_name"] = challenge.docker_image_name
         data["docker_port"] = challenge.docker_port
         data["use_challenge_network"] = challenge.use_challenge_network
+        data["is_global"] = challenge.is_global
 
         # Live container status for each config entry
         data["docker_container_exists"] = False
@@ -829,7 +877,8 @@ class DockerImageChallenge(BaseChallenge):
             actor = get_team_or_user()
             manager = current_app.docker_manager
             if actor and manager:
-                statuses = _container_status_list(manager, actor.name, challenge.id, configs)
+                actor_name = _actor_name_for(challenge, actor)
+                statuses = _container_status_list(manager, actor_name, challenge.id, configs)
                 data["docker_containers"] = statuses
                 data["docker_container_exists"] = any(s["exists"] for s in statuses)
         except Exception:
@@ -864,6 +913,8 @@ class DockerImageChallenge(BaseChallenge):
         if raw_containers is not None:
             use_network_raw = body.get("use_challenge_network", None)
             challenge.use_challenge_network = use_network_raw not in (None, "", "false", "0", "off", False)
+            is_global_raw = body.get("is_global", None)
+            challenge.is_global = is_global_raw not in (None, "", "false", "0", "off", False)
 
             try:
                 containers_data = _json.loads(raw_containers) if raw_containers else []

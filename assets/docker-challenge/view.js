@@ -167,13 +167,18 @@
    * Status fetch
    * ───────────────────────────────────────────────────────────────────── */
 
+  function isCurrent(challenge_id) {
+    return getChallengeId() === challenge_id;
+  }
+
   function docker_update_ui(challenge_id) {
     apiGet(`/docker/api/challenge/${challenge_id}/status`)
       .then(resp => {
+        if (!isCurrent(challenge_id)) return;
         if (!resp?.success) { setMsg(resp?.error || "Cannot get status", true); return; }
         renderAll(resp.containers || [], !!resp.is_global);
       })
-      .catch(() => setMsg("Error checking container status", true));
+      .catch(() => { if (isCurrent(challenge_id)) setMsg("Error checking container status", true); });
   }
 
   /* ─────────────────────────────────────────────────────────────────────
@@ -185,10 +190,11 @@
     setAllDisabled(true);
     apiPost(`/docker/api/challenge/${challenge_id}/start`, {})
       .then(resp => {
+        if (!isCurrent(challenge_id)) return;
         if (resp.success) { setMsg("Starting…"); pollUntilAllRunning(challenge_id, 15); }
         else { setMsg(resp.error || "Failed to start", true); setAllDisabled(false); }
       })
-      .catch(err => { setMsg("Failed to start: " + err.message, true); setAllDisabled(false); });
+      .catch(err => { if (isCurrent(challenge_id)) { setMsg("Failed to start: " + err.message, true); setAllDisabled(false); } });
   }
 
   function docker_resume(challenge_id) {
@@ -196,10 +202,11 @@
     setAllDisabled(true);
     apiPost(`/docker/api/challenge/${challenge_id}/resume`, {})
       .then(resp => {
+        if (!isCurrent(challenge_id)) return;
         if (resp.success) { setMsg("Resuming…"); pollUntilAllRunning(challenge_id, 15); }
         else { setMsg(resp.error || "Failed to resume", true); setAllDisabled(false); }
       })
-      .catch(err => { setMsg("Failed to resume: " + err.message, true); setAllDisabled(false); });
+      .catch(err => { if (isCurrent(challenge_id)) { setMsg("Failed to resume: " + err.message, true); setAllDisabled(false); } });
   }
 
   function docker_stop(challenge_id) {
@@ -208,10 +215,11 @@
     setAllDisabled(true);
     apiPost(`/docker/api/challenge/${challenge_id}/stop`, {})
       .then(resp => {
+        if (!isCurrent(challenge_id)) return;
         if (resp.success) { docker_update_ui(challenge_id); setMsg("Containers stopped."); }
         else { setMsg(resp.error || "Failed to stop", true); setAllDisabled(false); }
       })
-      .catch(err => { setMsg("Failed to stop: " + err.message, true); setAllDisabled(false); });
+      .catch(err => { if (isCurrent(challenge_id)) { setMsg("Failed to stop: " + err.message, true); setAllDisabled(false); } });
   }
 
   function docker_reset(challenge_id) {
@@ -220,10 +228,11 @@
     setAllDisabled(true);
     apiPost(`/docker/api/challenge/${challenge_id}/reset`, {})
       .then(resp => {
+        if (!isCurrent(challenge_id)) return;
         if (resp.success) { setMsg("Resetting…"); pollUntilAllRunning(challenge_id, 15); }
         else { setMsg(resp.error || "Failed to reset", true); setAllDisabled(false); }
       })
-      .catch(err => { setMsg("Failed to reset: " + err.message, true); setAllDisabled(false); });
+      .catch(err => { if (isCurrent(challenge_id)) { setMsg("Failed to reset: " + err.message, true); setAllDisabled(false); } });
   }
 
   /* ─────────────────────────────────────────────────────────────────────
@@ -232,13 +241,16 @@
 
   function pollUntilAllRunning(challenge_id, attemptsLeft) {
     if (attemptsLeft <= 0) {
+      if (!isCurrent(challenge_id)) return;
       setMsg("Containers are taking a while — try refreshing.", true);
       setAllDisabled(false);
       return;
     }
     setTimeout(() => {
+      if (!isCurrent(challenge_id)) return;
       apiGet(`/docker/api/challenge/${challenge_id}/status`)
         .then(resp => {
+          if (!isCurrent(challenge_id)) return;
           if (!resp?.success) { pollUntilAllRunning(challenge_id, attemptsLeft - 1); return; }
 
           const containers = resp.containers || [];
@@ -254,7 +266,7 @@
             pollUntilAllRunning(challenge_id, attemptsLeft - 1);
           }
         })
-        .catch(() => pollUntilAllRunning(challenge_id, attemptsLeft - 1));
+        .catch(() => { if (isCurrent(challenge_id)) pollUntilAllRunning(challenge_id, attemptsLeft - 1); });
     }, 2000);
   }
 

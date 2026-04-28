@@ -1,16 +1,12 @@
 from pathlib import Path
 
-from flask import Blueprint, make_response, request, jsonify, send_from_directory, current_app
+from flask import Blueprint, make_response, request, jsonify, current_app
 from flask.templating import render_template
-from werkzeug.utils import secure_filename
 import os
 import re
-import uuid
-import tarfile
 
 from CTFd.plugins.challenges import BaseChallenge, CHALLENGE_CLASSES
 from CTFd.models import db, Challenges
-from CTFd.utils.decorators import admins_only
 from CTFd.utils.user import get_current_team, get_current_user
 from ..core.labels import DockerLabels
 from ..core.config import RuntimeConfig
@@ -476,204 +472,6 @@ def challenge_unavailable(token):
 
 
 # ---------------------------------------------------------------------------
-# Admin API — image upload (unchanged)
-# ---------------------------------------------------------------------------
-
-@bp.route("/admin/docker/upload", methods=["POST"])
-@admins_only
-def upload_docker_image():
-    if "image_tar" not in request.files:
-        return jsonify({"success": False, "error": "No file part"}), 400
-
-    f = request.files["image_tar"]
-    if not f.filename:
-        return jsonify({"success": False, "error": "No file selected"}), 400
-    if not f.filename.lower().endswith(".tar"):
-        return jsonify({"success": False, "error": "Only .tar files are allowed"}), 400
-
-    content_length = request.content_length
-    if content_length is not None:
-        if content_length == 0:
-            return jsonify({"success": False, "error": "Empty file"}), 400
-        if content_length > MAX_IMAGE_SIZE:
-            return jsonify({"success": False, "error": f"File too large (max {MAX_IMAGE_SIZE // 1024 ** 3} GB)"}), 413
-
-    unique_filename = f"{uuid.uuid4().hex}_{secure_filename(f.filename)}"
-    save_path = os.path.join(get_docker_store_path(), unique_filename)
-
-    try:
-        bytes_written = 0
-        with open(save_path, "wb") as out:
-            while chunk := f.stream.read(4 * 1024 * 1024):
-                bytes_written += len(chunk)
-                if bytes_written > MAX_IMAGE_SIZE:
-                    out.close()
-                    os.unlink(save_path)
-                    return jsonify({"success": False, "error": f"File too large (max {MAX_IMAGE_SIZE // 1024 ** 3} GB)"}), 413
-                out.write(chunk)
-
-        if bytes_written == 0:
-            os.unlink(save_path)
-            return jsonify({"success": False, "error": "Empty file"}), 400
-
-        if not tarfile.is_tarfile(save_path):
-            os.unlink(save_path)
-            return jsonify({"success": False, "error": "Not a valid tar archive"}), 400
-
-        current_app.logger.info(f"[DockerImageChallenge] Uploaded {unique_filename} ({bytes_written / 1024 / 1024:.1f} MB)")
-        return jsonify({"success": True, "filename": unique_filename})
-
-    except Exception as e:
-        current_app.logger.error(f"[DockerImageChallenge] Upload failed: {e}")
-        if os.path.exists(save_path):
-            os.unlink(save_path)
-        return jsonify({"success": False, "error": "Upload failed"}), 500
-
-
-# ---------------------------------------------------------------------------
-# Admin API — container config CRUD
-# ---------------------------------------------------------------------------
-
-@bp.route("/admin/docker/challenge/<int:challenge_id>/containers", methods=["GET"])
-@admins_only
-def admin_list_containers(challenge_id):
-    configs = _get_ordered_configs(challenge_id)
-    return jsonify({
-        "success": True,
-        "containers": [_config_to_dict(c) for c in configs],
-    })
-
-
-@bp.route("/admin/docker/challenge/<int:challenge_id>/containers", methods=["POST"])
-@admins_only
-def admin_add_container(challenge_id):
-    """Append a new container config to the challenge."""
-    body = request.get_json() or {}
-
-    # Auto-assign the next index
-    last = (
-        DockerContainerConfig.query
-        .filter_by(challenge_id=challenge_id)
-        .order_by(DockerContainerConfig.container_index.desc())
-        .first()
-    )
-    next_index = (last.container_index + 1) if last else 0
-
-    cfg = DockerContainerConfig(
-        challenge_id=challenge_id,
-        container_index=next_index,
-        label=body.get("label") or None,
-        docker_image_filename=body.get("docker_image_filename") or None,
-        docker_image_name=body.get("docker_image_name") or None,
-        container_port=_int_or_none(body.get("container_port")),
-    )
-    db.session.add(cfg)
-    db.session.commit()
-    return jsonify({"success": True, "container": _config_to_dict(cfg)}), 201
-
-
-@bp.route("/admin/docker/challenge/<int:challenge_id>/containers/<int:config_id>", methods=["PATCH"])
-@admins_only
-def admin_update_container(challenge_id, config_id):
-    cfg = DockerContainerConfig.query.filter_by(id=config_id, challenge_id=challenge_id).first_or_404()
-    body = request.get_json() or {}
-
-    if "label" in body:
-        cfg.label = body["label"] or None
-
-    if "docker_image_filename" in body:
-        new_fn = body["docker_image_filename"] or None
-        if cfg.docker_image_filename and cfg.docker_image_filename != new_fn:
-            DockerImageChallenge._delete_image_file(cfg.docker_image_filename)
-        cfg.docker_image_filename = new_fn
-
-    if "docker_image_name" in body:
-        cfg.docker_image_name = body["docker_image_name"] or None
-
-    if "container_port" in body:
-        cfg.container_port = _int_or_none(body["container_port"])
-
-    db.session.commit()
-    return jsonify({"success": True, "container": _config_to_dict(cfg)})
-
-
-@bp.route("/admin/docker/challenge/<int:challenge_id>/containers/<int:config_id>", methods=["DELETE"])
-@admins_only
-def admin_delete_container(challenge_id, config_id):
-    cfg = DockerContainerConfig.query.filter_by(id=config_id, challenge_id=challenge_id).first_or_404()
-    if cfg.docker_image_filename:
-        DockerImageChallenge._delete_image_file(cfg.docker_image_filename)
-    db.session.delete(cfg)
-    db.session.commit()
-    return jsonify({"success": True})
-
-
-@bp.route("/uploads/docker_images/<path:filename>")
-@admins_only
-def serve_docker_image(filename):
-    return send_from_directory(get_docker_store_path(), filename)
-
-
-@bp.route("/admin/docker/images", methods=["GET"])
-@admins_only
-def admin_list_registry_images():
-    """
-    Return all available Docker images.
-
-    Strategy:
-      1. Ask the RegistryManager for images from the private registry
-         (queries the Registry HTTP API v2 — no Docker daemon needed).
-      2. If the registry is not configured or returns nothing, fall back
-         to listing images cached locally on each Docker node.
-
-    Each entry always contains at least: { tag, source }
-    Registry entries also have: { repo, short_tag }
-    Node-local entries also have: { id, size_mb, node }
-    """
-    manager = current_app.docker_manager
-    if not manager:
-        return jsonify({"success": False, "error": "Docker manager not configured"}), 500
-
-    # ── 1. Try the private registry ──────────────────────────────────
-    registry = manager.registry
-    images   = []
-
-    if registry and registry._is_configured():
-        try:
-            images = registry.list_images()
-        except Exception as exc:
-            current_app.logger.warning(
-                f"[DockerImageChallenge] Registry listing failed, falling back to nodes: {exc}"
-            )
-
-    # ── 2. Fall back to node-local images ────────────────────────────
-    if not images:
-        seen: set = set()
-        for node in manager.nodes:
-            try:
-                node_images = manager._node_call(node, node.client.images.list)
-                for img in node_images:
-                    for tag in (img.tags or []):
-                        if tag in seen:
-                            continue
-                        seen.add(tag)
-                        images.append({
-                            "tag":     tag,
-                            "id":      img.short_id,
-                            "size_mb": round(img.attrs.get("Size", 0) / 1024 / 1024, 1),
-                            "node":    node.address,
-                            "source":  "node",
-                        })
-            except Exception as exc:
-                current_app.logger.warning(
-                    f"[DockerImageChallenge] Could not list images on {node}: {exc}"
-                )
-        images.sort(key=lambda x: x["tag"])
-
-    return jsonify({"success": True, "images": images, "source": images[0]["source"] if images else "none"})
-
-
-# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -1000,4 +798,4 @@ def load(app):
     with app.app_context():
         CHALLENGE_CLASSES["docker"] = DockerImageChallenge
         db.create_all()
-    app.logger.info("✓ Docker Image Challenge plugin loaded")
+    app.logger.info("Docker Manager Challenges loaded")

@@ -37,16 +37,43 @@ admin_docker = Blueprint(
     static_folder=os.path.join(BASE_DIR, "assets"),
 )
 
-def _cert_file() -> str:
-    from CTFd.utils.uploads import get_uploader
-    try:
-        # Prefer CTFd's configured upload path
-        base = current_app.config.get("UPLOAD_FOLDER", "/var/uploads")
-    except RuntimeError:
-        base = "/var/uploads"
+def _cert_file(app=None) -> str:
+    if app is not None:
+        base = app.config.get("UPLOAD_FOLDER", "/var/uploads")
+    else:
+        try:
+            base = current_app.config.get("UPLOAD_FOLDER", "/var/uploads")
+        except RuntimeError:
+            base = "/var/uploads"
     cert_dir = os.path.join(base, "docker_registry")
     os.makedirs(cert_dir, exist_ok=True)
     return os.path.join(cert_dir, "ca.crt")
+
+
+def _materialize_registry_cert(app):
+    """
+    Re-create the registry CA cert file on disk from its DB-backed copy.
+
+    The upload folder is wiped on every `docker run --build`, but the CTFd
+    config DB persists. We stash the cert bytes alongside the path so we
+    can rehydrate the file at startup without forcing the admin to re-upload.
+    """
+    from CTFd.utils import get_config
+    data = get_config("docker_registry_cert_data")
+    if not data:
+        return
+    try:
+        path = _cert_file(app=app)
+        if not os.path.isfile(path):
+            with open(path, "wb") as out:
+                out.write(data.encode("utf-8") if isinstance(data, str) else data)
+            app.logger.info(f"[DockerManager] Restored registry cert to {path} from DB")
+        if RuntimeConfig.REGISTRY_CERT_PATH != path:
+            from CTFd.utils import set_config as ctfd_set_config
+            ctfd_set_config("docker_registry_cert_path", path)
+            RuntimeConfig.REGISTRY_CERT_PATH = path
+    except Exception as e:
+        app.logger.error(f"[DockerManager] Failed to restore registry cert: {e}")
  
  
 @admin_docker.route("/admin/docker/registry/cert", methods=["POST"])
@@ -77,8 +104,10 @@ def upload_registry_cert():
         current_app.logger.error(f"[DockerManager] Failed to save registry cert: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
  
-    # Persist path in config (updates the live RuntimeConfig + DB key)
+    # Persist path AND content in config so we can rehydrate the file
+    # after a container rebuild wipes /var/uploads.
     _set_config("REGISTRY_CERT_PATH", cert_file)
+    _set_config("REGISTRY_CERT_DATA", cert_bytes.decode("utf-8", errors="replace"))
     RuntimeConfig.REGISTRY_CERT_PATH = cert_file
  
     current_app.logger.info(f"[DockerManager] Registry cert saved to {cert_file}")
@@ -89,7 +118,7 @@ def upload_registry_cert():
 @admins_only
 def delete_registry_cert():
     """Remove the stored registry cert and clear the config key."""
-    path = getattr(RuntimeConfig, "REGISTRY_CERT_PATH", None) or _get_cert_path()
+    path = getattr(RuntimeConfig, "REGISTRY_CERT_PATH", None) or _cert_file()
     if path and os.path.isfile(path):
         try:
             os.unlink(path)
@@ -97,8 +126,9 @@ def delete_registry_cert():
             return jsonify({"success": False, "error": str(e)}), 500
  
     _set_config("REGISTRY_CERT_PATH", "")
+    _set_config("REGISTRY_CERT_DATA", "")
     RuntimeConfig.REGISTRY_CERT_PATH = None
- 
+
     return jsonify({"success": True})
  
  
@@ -300,6 +330,7 @@ def api_metrics_history():
 def load(app):
     app.register_blueprint(admin_docker)
     load_runtime_config()
+    _materialize_registry_cert(app)
 
     old_store = getattr(app, "metrics_store", None)
     if old_store is not None:

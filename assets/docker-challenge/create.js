@@ -52,7 +52,9 @@
     registryImages.forEach(img => {
       const opt = document.createElement('option');
       opt.value = img.tag;
-      opt.textContent = `${img.tag}  (${img.size_mb} MB)`;
+      opt.textContent = img.size_mb != null
+                          ? `${img.tag}  (${img.size_mb} MB)`
+                          : img.tag;
       if (img.tag === current) opt.selected = true;
       select.appendChild(opt);
     });

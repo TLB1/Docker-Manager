@@ -148,7 +148,7 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────────
-   * Message / lock helpers — read from live DOM, not stale refs
+   * Message / lock helpers; read from live DOM
    * ───────────────────────────────────────────────────────────────────── */
 
   function setMsg(text, isError = false) {
@@ -270,7 +270,7 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────────
-   * Event binding — unbind namespace first, then re-attach once
+   * Event binding: unbind namespace first, then re-attach once
    * ───────────────────────────────────────────────────────────────────── */
 
   function getChallengeId() {
@@ -318,20 +318,31 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────────
-   * Init: fires once the challenge HTML is actually in the DOM.
+   * Init — needs to cover two different theme lifecycles.
    *
-   * On the legacy core theme, CTFd calls postRender() right after injecting
-   * the challenge markup into the modal. On core-beta, postRender() is also
-   * invoked after Alpine mounts the view. Either way, #docker-controls is
-   * guaranteed to exist at this point; unlike $(document).ready, which on
-   * the legacy theme fires before the modal HTML is inserted.
+   *     Legacy "core" theme: CTFd loads view.js BEFORE injecting the
+   *     challenge HTML into the modal, then calls postRender() once the
+   *     markup is in place. $(document).ready fires too early here
+   *     #docker-controls doesn't exist yet, so we must hook postRender.
+   *
+   *     core theme: Alpine mounts the markup as part of the modal,
+   *     and view.js is loaded after that. postRender is NOT invoked by
+   *     this theme, but by the time $(document).ready fires the markup
+   *     is already in the DOM, so DOM-ready is the right hook.
+   *
+   * init() is idempotent (bindEvents unbinds its namespace before
+   * re-attaching, docker_update_ui just refetches state), so it's safe
+   * if both hooks fire.
    * ───────────────────────────────────────────────────────────────────── */
 
-  CTFd._internal.challenge.postRender = function () {
+  function init() {
     const challenge_id = getChallengeId();
-    if (!challenge_id) return;
+    if (!challenge_id) return; // markup not in DOM yet; wait for the other hook
     bindEvents();
     docker_update_ui(challenge_id);
-  };
+  }
+
+  CTFd._internal.challenge.postRender = init;
+  $(init);
 
 })();

@@ -10,6 +10,12 @@
   // which would otherwise stack duplicate listeners.
   const NS = ".dockerChallenge";
 
+  function getCsrfNonce() {
+    return (window.init && window.init.csrfNonce) ||
+           (window.CTFd && CTFd.config && CTFd.config.csrfNonce) ||
+           "";
+  }
+
   /* ─────────────────────────────────────────────────────────────────────
    * API helpers
    * ───────────────────────────────────────────────────────────────────── */
@@ -24,7 +30,7 @@
       credentials: "same-origin",
       headers: {
         "Content-Type": "application/json",
-        "CSRF-Token": init.csrfNonce,
+        "CSRF-Token": getCsrfNonce(),
       },
       body: JSON.stringify(data),
     }).then(r => {
@@ -318,7 +324,7 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────────
-   * Init — needs to cover two different theme lifecycles.
+   * Init; needs to cover two different theme lifecycles.
    *
    *     Legacy "core" theme: CTFd loads view.js BEFORE injecting the
    *     challenge HTML into the modal, then calls postRender() once the
@@ -330,19 +336,19 @@
    *     this theme, but by the time $(document).ready fires the markup
    *     is already in the DOM, so DOM-ready is the right hook.
    *
-   * init() is idempotent (bindEvents unbinds its namespace before
-   * re-attaching, docker_update_ui just refetches state), so it's safe
-   * if both hooks fire.
+   * initChallenge() is idempotent (bindEvents unbinds its namespace
+   * before re-attaching, docker_update_ui just refetches state), so
+   * it's safe if both hooks fire.
    * ───────────────────────────────────────────────────────────────────── */
 
-  function init() {
+  function initChallenge() {
     const challenge_id = getChallengeId();
     if (!challenge_id) return; // markup not in DOM yet; wait for the other hook
     bindEvents();
     docker_update_ui(challenge_id);
   }
 
-  CTFd._internal.challenge.postRender = init;
-  $(init);
+  CTFd._internal.challenge.postRender = initChallenge;
+  $(initChallenge);
 
 })();

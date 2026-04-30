@@ -231,7 +231,7 @@ class DockerManager:
                 if attempt >= retries:
                     break
                 # RemoteDisconnected / ConnectionError mean the transport is
-                # dead — rebuild the client before the next attempt.
+                # dead - rebuild the client before the next attempt.
                 # ChannelException usually means MaxSessions was momentarily
                 # exhausted; the transport is still fine, so only rebuild
                 # after the first retry fails.
@@ -532,10 +532,10 @@ class DockerManager:
         When *network_name* is provided the container joins that network with
         *network_alias* so peer containers can reach it by hostname.
         When *network_name* is None the container starts on Docker's default
-        bridge — useful for single-container challenges that don't need
+        bridge - useful for single-container challenges that don't need
         inter-container communication.
 
-        When expose_port=False no host port is allocated or bound —
+        When expose_port=False no host port is allocated or bound -
         the container is only reachable from within the challenge network.
         """
         token = f"{secrets.randbits(48):08x}"
@@ -589,9 +589,15 @@ class DockerManager:
             DockerLabels.CONTAINER_INDEX: str(container_index),
         }
 
+        # Deterministic name so a transport-error retry of containers.create()
+        # collides with the prior partial success (Docker returns 409 instead of
+        # silently creating a second container with the same labels). Without
+        # this, _node_call's retry loop can spawn duplicates that the kill
+        # timer's containers[0]-only removal won't catch — they linger forever.
         run_kwargs: Dict = dict(
             image=image,
             detach=True,
+            name=f"ctfd-{token}",
             mem_limit=str(RuntimeConfig.MEM_LIMIT_PER_CONTAINER),
             cpu_quota=RuntimeConfig.DOCKER_CONTAINER_CPU_QUOTA,
             ports=docker_ports if docker_ports else None,
@@ -600,7 +606,7 @@ class DockerManager:
 
         if network_name:
             labels[DockerLabels.NETWORK_ALIAS] = network_alias
-            # Do NOT pass network/networking_config to create — docker-py's
+            # Do NOT pass network/networking_config to create; docker-py's
             # handling of those kwargs differs across versions and may silently
             # discard our aliases or set an unexpected NetworkMode.
             # We connect explicitly after creation (see below).
@@ -620,13 +626,30 @@ class DockerManager:
             if expose_port:
                 self.ports_manager.release_port(token)
             raise
+        except APIError as e:
+            # 409 here means a previous _node_call retry already created the
+            # container server-side (response was lost in transit). The
+            # deterministic name made the retry collide instead of producing a
+            # silent duplicate; claim the existing one.
+            if e.status_code == 409 or "already in use" in str(e).lower():
+                log.warning(
+                    f"[DockerManager] Container name ctfd-{token} already exists, "
+                    f"claiming the prior partial create: {e}"
+                )
+                existing = self.get_container_by_token(token)
+                if existing:
+                    self._container_cache.add(CachedContainer.from_docker(existing, node.address))
+                    return token
+            if expose_port:
+                self.ports_manager.release_port(token)
+            raise
         except Exception:
             if expose_port:
                 self.ports_manager.release_port(token)
             raise
 
         # After create we re-fetch the container by token when retrying
-        # destructive operations — the Container object returned by create()
+        # destructive operations; the Container object returned by create()
         # binds to the old client and won't survive a reconnect.
         container_id = container.id
 
@@ -636,10 +659,10 @@ class DockerManager:
             except Exception:
                 return container
 
-        # ── Step 2: connect to the challenge network with alias ──────────
+        # Step 2: connect to the challenge network with alias
         # containers.create() with no `network` kwarg attaches the container
         # to Docker's default `bridge` network. Calling connect() then ADDS
-        # the challenge network on top — it does not replace the default
+        # the challenge network on top;  it does not replace the default
         # attachment, so without the disconnect below every container would
         # sit on both networks and challenges could reach each other via
         # the shared default bridge.
@@ -734,24 +757,7 @@ class DockerManager:
 
         Returns a list of tokens in the same order as *specs*.
         The token for a spec with expose_port=False is still valid for
-        suspend/resume/remove — it just has no host port allocated.
-
-        Example::
-
-            tokens = manager.create_challenge_containers(team_id, challenge_id, [
-                ContainerSpec(
-                    image="ctf-challenge-internal:latest",
-                    network_alias="internal",
-                    expose_port=False,          # never reachable from outside
-                ),
-                ContainerSpec(
-                    image="ctf-challenge-gateway:latest",
-                    network_alias="gateway",
-                    expose_port=True,           # players connect here
-                    container_port=80,
-                ),
-            ])
-            player_url = f"http://{tokens[1]}.{domain}/"
+        suspend/resume/remove - it just has no host port allocated.
         """
         if not self.can_create_container(team_id):
             raise Exception("Team container quota exceeded")
@@ -882,8 +888,13 @@ class DockerManager:
         # path swallowed per-node transport errors and returned None, so a
         # transient SSH blip at kill-time would drop the timer and leak the
         # container forever.
-        container: Optional[Container] = None
-        owning_node: Optional[Node] = None
+        #
+        # We collect EVERY container matching the token across every node.
+        # A retry of containers.create() across a flaky SSH
+        # transport could in principle leave duplicates with the same labels
+        # (the deterministic-name guard now prevents this for new containers,
+        # but pre-existing duplicates still need to be swept).
+        matches: list[tuple[Node, Container]] = []
         any_query_failed = False
         for node in self.nodes:
             try:
@@ -894,14 +905,13 @@ class DockerManager:
                         filters={"label": [f"{DockerLabels.TOKEN}={token}"]},
                     ),
                 )
-                if containers and container is None:
-                    container = containers[0]
-                    owning_node = node
+                for c in containers:
+                    matches.append((node, c))
             except Exception as e:
                 log.warning(f"[DockerManager] remove_container lookup on {node} failed: {e}")
                 any_query_failed = True
 
-        if container is None:
+        if not matches:
             if any_query_failed:
                 log.warning(
                     f"[DockerManager] remove_container({token}): lookup inconclusive; "
@@ -912,40 +922,36 @@ class DockerManager:
                 )
             return False
 
-        # Only cancel timers once we've confirmed the container exists. If we
-        # cancelled on an inconclusive lookup we'd throw away the kill timer
-        # for a container we couldn't actually verify was gone.
+        # Only cancel timers once we've confirmed at least one container exists.
+        # If we cancelled on an inconclusive lookup we'd throw away the kill
+        # timer for a container we couldn't actually verify was gone.
         self.timer_timeout.cancel(token)
         self.timer_kill.cancel(token)
 
-        challenge_id = container.labels.get(DockerLabels.CHALLENGE)
-        team_id = container.labels.get(DockerLabels.TEAM)
-        cid = container.id
+        challenge_id = matches[0][1].labels.get(DockerLabels.CHALLENGE)
+        team_id = matches[0][1].labels.get(DockerLabels.TEAM)
 
-        candidates: List[Node] = [owning_node]
-        for n in self.nodes:
-            if n not in candidates:
-                candidates.append(n)
-
-        removed_on: Optional[Node] = None
+        all_removed = True
         last_error: Optional[Exception] = None
-        for node in candidates:
+        removed_nodes: set = set()
+        for node, c in matches:
+            cid = c.id
             try:
                 self._node_call(
                     node,
-                    lambda c: c.containers.get(cid).remove(force=True),
+                    lambda dc, _cid=cid: dc.containers.get(_cid).remove(force=True),
                 )
-                removed_on = node
-                break
+                removed_nodes.add(node)
             except NotFound:
+                # Already gone on this node
                 continue
             except Exception as e:
                 last_error = e
-                continue
+                all_removed = False
 
-        if removed_on is None:
+        if not all_removed:
             log.warning(
-                f"[DockerManager] Failed to remove container {token} on any node "
+                f"[DockerManager] Failed to remove all containers for token {token} "
                 f"(last error: {last_error}); rescheduling kill in 60s."
             )
             self.timer_kill.startOrRenew(
@@ -956,7 +962,8 @@ class DockerManager:
         self._container_cache.remove(token)
         self.ports_manager.release_port(token)
         if challenge_id:
-            self._cleanup_challenge_network(removed_on, challenge_id, team_id)
+            for node in removed_nodes:
+                self._cleanup_challenge_network(node, challenge_id, team_id)
         return True
 
     def delete_all(self) -> int:
@@ -984,20 +991,37 @@ class DockerManager:
 
             for container in containers:
                 cid = container.id
+                token = container.labels.get(DockerLabels.TOKEN)
                 try:
-                    token = container.labels.get(DockerLabels.TOKEN)
-                    if token:
-                        self.timer_timeout.cancel(token)
-                        self.timer_kill.cancel(token)
                     self._node_call(
                         node,
                         lambda c, _cid=cid: c.containers.get(_cid).remove(force=True),
                     )
+                except NotFound:
+                    # Already gone; drop any lingering timers and move on.
                     if token:
-                        self.ports_manager.release_port(token)
-                    removed += 1
+                        self.timer_timeout.cancel(token)
+                        self.timer_kill.cancel(token)
+                    continue
                 except Exception as e:
+                    # Remove failed: leave the existing timers in place, and if
+                    # the container has none (e.g. lost across a restart),
+                    # re-arm a short kill so we retry shortly. Cancelling here
+                    # would orphan the container forever.
                     log.error(f"Failed removing container {cid[:12]}: {e}")
+                    if token:
+                        self.timer_kill.startOrRenew(
+                            token, 60, lambda t=token: self.remove_container(t)
+                        )
+                    continue
+
+                # Removed successfully; now it's safe to cancel timers and
+                # release the host port.
+                if token:
+                    self.timer_timeout.cancel(token)
+                    self.timer_kill.cancel(token)
+                    self.ports_manager.release_port(token)
+                removed += 1
 
         self._container_cache.clear()
         self._purge_challenge_networks()

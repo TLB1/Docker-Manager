@@ -401,7 +401,7 @@ The plugin maintains a persistent SSH connection pool (`core/ssh.py`). Connectio
 Each container has two timers:
 
 - **Suspension timer** (`CONTAINER_SUSPENSION_INTERVAL`): Reset on every player access (keepalive). When it expires, the container is paused.
-- **Lifetime timer** (`DOCKER_CONTAINER_LIFETIME`): Counts from container creation. When it expires, the container is deleted regardless of state.
+- **Lifetime timer** (`DOCKER_CONTAINER_LIFETIME`): Reset on every player access (keepalive) alongside the suspension timer. Once a container is paused it no longer receives keepalives, so this timer fires `DOCKER_CONTAINER_LIFETIME` after the last player activity and deletes the container.
 
 ### Container Tokens
 

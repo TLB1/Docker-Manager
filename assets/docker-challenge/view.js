@@ -3,8 +3,7 @@
 
   const $ = CTFd.lib.$;
 
-  CTFd._internal.challenge.preRender  = function () {};
-  CTFd._internal.challenge.postRender = function () {};
+  CTFd._internal.challenge.preRender = function () {};
 
   // Namespace all delegated events so we can cleanly remove them before
   // re-attaching. CTFd re-executes this script each time the modal opens,
@@ -319,14 +318,20 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────────
-   * Init
+   * Init: fires once the challenge HTML is actually in the DOM.
+   *
+   * On the legacy core theme, CTFd calls postRender() right after injecting
+   * the challenge markup into the modal. On core-beta, postRender() is also
+   * invoked after Alpine mounts the view. Either way, #docker-controls is
+   * guaranteed to exist at this point; unlike $(document).ready, which on
+   * the legacy theme fires before the modal HTML is inserted.
    * ───────────────────────────────────────────────────────────────────── */
 
-  $(function () {
+  CTFd._internal.challenge.postRender = function () {
     const challenge_id = getChallengeId();
     if (!challenge_id) return;
     bindEvents();
     docker_update_ui(challenge_id);
-  });
+  };
 
 })();

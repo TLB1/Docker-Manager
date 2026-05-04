@@ -552,14 +552,23 @@ def load(app):
     app.docker_manager  = DockerManager(RuntimeConfig.WORKER_NODES)
     app.metrics_store   = MetricsStore()
 
-    try:
-        app.docker_manager.delete_all()
-        app.docker_manager.update_nginx_data()
-        app.docker_manager.print_nodes_table()
-        app.docker_manager.update_nodes_details()
-        app.metrics_store.start(app.docker_manager.nodes)
-    except Exception:
-        app.docker_manager = None
+    # Each startup step is best-effort: unreachable worker nodes must not wipe
+    # out app.docker_manager, otherwise admins cannot reach /admin/docker_manager
+    # to fix WORKER_NODES. Errors are logged; the manager stays installed.
+    for step in (
+        app.docker_manager.delete_all,
+        app.docker_manager.update_nginx_data,
+        app.docker_manager.print_nodes_table,
+        app.docker_manager.update_nodes_details,
+        lambda: app.metrics_store.start(app.docker_manager.nodes),
+    ):
+        try:
+            step()
+        except Exception as e:
+            current_app.logger.warning(
+                f"[Docker-Manager] startup step {getattr(step, '__name__', step)} "
+                f"failed: {e}"
+            )
 
 
 

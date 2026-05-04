@@ -79,7 +79,7 @@ def _make_docker_client_over_ssh(ssh_pool: SSHPool, node: Node) -> DockerClient:
     return DockerClient(base_url=f"ssh://{node.name}@{node.address}")
 
 
-def _build_docker_client(node: Node) -> DockerClient:
+def _build_docker_client(node: Node) -> Optional[DockerClient]:
     """
     Build a fresh DockerClient for *node* and enable SSH keepalive on the
     underlying paramiko transport.
@@ -90,8 +90,15 @@ def _build_docker_client(node: Node) -> DockerClient:
     sees the half-open connection close mid-request and raises
     ``RemoteDisconnected``. Setting the keepalive interval here keeps the
     transport healthy across the quieter windows between polling cycles.
+
+    Returns None if the SSH transport cannot be established. Plugin load must
+    survive an unreachable worker so admins can fix WORKER_NODES from the UI.
     """
-    client = DockerClient(base_url=f"ssh://{node.name}@{node.address}")
+    try:
+        client = DockerClient(base_url=f"ssh://{node.name}@{node.address}")
+    except Exception as e:
+        log.warning(f"[DockerManager] Could not connect to {node}: {e}")
+        return None
     try:
         adapter = client.api.get_adapter(client.api.base_url)
         ssh_client = getattr(adapter, "ssh_client", None)
@@ -189,15 +196,20 @@ class DockerManager:
     # ------------------------------------------------------------------ #
 
     def _reconnect_node(self, node: Node):
-        """Tear down and rebuild the Docker client for a node."""
+        """Tear down and rebuild the Docker client for a node.
+
+        Sets node.client = None on failure rather than raising, so subsequent
+        callers can detect the unreachable state and surface a clean error
+        instead of crashing on AttributeError.
+        """
         try:
-            node.client.close()
+            if node.client is not None:
+                node.client.close()
         except Exception:
             pass
-        try:
-            node.client = _build_docker_client(node)
-        except Exception as e:
-            raise RuntimeError(f"Failed to reconnect Docker client for {node}: {e}")
+        node.client = _build_docker_client(node)
+        if node.client is None:
+            raise RuntimeError(f"Failed to reconnect Docker client for {node}")
 
     def _node_call(self, node: Node, op, retries: Optional[int] = None):
         """
@@ -224,6 +236,17 @@ class DockerManager:
         last_exc = None
         for attempt in range(retries + 1):
             try:
+                if node.client is None:
+                    # Node was unreachable at startup (or last reconnect failed).
+                    # Try once per attempt to bring it back; if it still won't
+                    # connect, surface a clean transport error so callers don't
+                    # explode on AttributeError.
+                    try:
+                        self._reconnect_node(node)
+                    except Exception as re:
+                        raise requests.exceptions.ConnectionError(
+                            f"Node {node} is not connected: {re}"
+                        )
                 with node.ssh_semaphore:
                     return op(node.client)
             except _TRANSPORT_ERRORS as e:
@@ -1107,15 +1130,20 @@ class DockerManager:
         print(f"\n{sep}\n{header}\n{sep}")
         totals = [0, 0, 0, 0, 0]
         for node in self.nodes:
-            info = self._node_call(node, lambda c: c.info())
+            try:
+                info = self._node_call(node, lambda c: c.info())
+                containers = self._node_call(
+                    node,
+                    lambda c: c.containers.list(
+                        all=True,
+                        filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                    ),
+                )
+            except Exception as e:
+                log.warning(f"[DockerManager] print_nodes_table: skipping {node}: {e}")
+                print(f"{node.address:20} | UNREACHABLE")
+                continue
             mem_total = int(info.get("MemTotal", 0))
-            containers = self._node_call(
-                node,
-                lambda c: c.containers.list(
-                    all=True,
-                    filters={"label": [f"{DockerLabels.CTFD}=true"]},
-                ),
-            )
             running = sum(1 for c in containers if c.status == "running")
             exited  = sum(1 for c in containers if c.status != "running")
             free_mem = self.node_free_mem(node)

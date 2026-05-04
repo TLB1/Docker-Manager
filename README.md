@@ -40,9 +40,120 @@
 <img height="250" alt="image" src="https://github.com/user-attachments/assets/0c031da3-5c26-453a-ba0b-e7fd8f67635f" />
 
 ## Plugin installation
-Go to `CTFd/CTFd/plugins/`, clone the plugin in the folder and start the installer script.
-```bash  
+
+### Automatic install (recommended)
+Go to `CTFd/CTFd/plugins/`, clone the plugin in the folder and start the installer script. Follow the given instructions.
+```bash
 git clone https://github.com/TLB1/Docker-Manager.git
 cd Docker-Manager
 ./install.sh
 ```
+
+### Manual install
+If you'd rather not run the script, perform the same steps by hand from the plugin directory `CTFd/CTFd/plugins/Docker-Manager/`.
+
+#### 1. Generate the SSH keypair
+```bash
+mkdir -p ssh/ctfd_ssh_keys
+ssh-keygen -t ed25519 -f ssh/ctfd_ssh_keys/id_ed25519 -N ""
+chmod 700 ssh/ctfd_ssh_keys
+chmod 600 ssh/ctfd_ssh_keys/id_ed25519
+chmod 644 ssh/ctfd_ssh_keys/id_ed25519.pub
+```
+
+#### 2. Patch the CTFd `Dockerfile`
+Insert the following block **immediately before** the `USER 1001` line in `CTFd/Dockerfile`:
+```Dockerfile
+# --- Docker Manager plugin requirements ---
+RUN apt-get update && apt-get install -y openssh-client
+COPY --chown=1001:1001 ./CTFd/plugins/Docker-Manager/ssh/ctfd_ssh_keys /home/ctfd/.ssh/
+RUN mkdir -p /.ssh && chown -R 1001:1001 /home/ctfd/.ssh
+RUN mkdir /var/images/ && chown 1001:1001 ./CTFd/plugins/Docker-Manager/nginx/ /var/images/
+# -------------------------------------------
+```
+
+#### 3. Patch `docker-compose.yml`
+Find the host's docker group GID:
+```bash
+getent group docker | cut -d: -f3
+```
+
+Add the named volumes at the top level:
+```yaml
+volumes:
+  proxy_data:
+  docker_images:
+  # ...keep any existing volumes
+```
+
+Add the proxy service to `services:`:
+```yaml
+  ctfd-nginx-proxy:
+    image: nginx:stable-alpine
+    container_name: ctfd-nginx-proxy
+    restart: unless-stopped
+    volumes:
+      - ./CTFd/plugins/Docker-Manager/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - proxy_data:/etc/nginx/data
+    network_mode: host
+    depends_on:
+      - ctfd
+```
+
+Patch the existing `ctfd` service — replace `<DOCKER_GID>` with the GID from above:
+```yaml
+  ctfd:
+    # ...existing config
+    group_add:
+      - <DOCKER_GID>
+    volumes:
+      # ...existing mounts
+      - proxy_data:/opt/CTFd/CTFd/plugins/Docker-Manager/nginx/data
+      - docker_images:/var/images/
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+#### 4. Update the nginx resolver
+Edit `nginx/nginx.conf` and replace the `resolver` directive with your host's real upstream DNS servers (from `/etc/resolv.conf`, ignoring `127.0.0.53` and other loopback stubs). Example:
+```nginx
+resolver 1.1.1.1 8.8.8.8 valid=30s ipv6=off;
+```
+
+#### 5. Worker-node setup
+For every Docker worker node, copy the public key and grant the SSH user the permissions the plugin needs.
+
+On the CTFd host:
+```bash
+ssh-copy-id -i ssh/ctfd_ssh_keys/id_ed25519.pub <user>@<node>
+```
+
+On the worker node, as a user with `sudo`:
+```bash
+sudo tee /etc/sudoers.d/ctfd-cert > /dev/null <<EOF
+<user> ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/docker/certs.d/*
+<user> ALL=(ALL) NOPASSWD: /bin/cp /tmp/ctfd_ca_*.crt /etc/docker/certs.d/*/ca.crt
+<user> ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/docker/certs.d/*/ca.crt
+EOF
+sudo chmod 440 /etc/sudoers.d/ctfd-cert
+sudo usermod -aG docker <user>
+```
+
+Optionally but recommended, expand Docker's address pools so the node can host many challenge bridge networks:
+```bash
+sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{
+  "default-address-pools": [
+    { "base": "10.200.0.0/13", "size": 24 }
+  ]
+}
+EOF
+sudo systemctl restart docker
+```
+
+#### 6. Build and start CTFd
+From the CTFd root:
+```bash
+sudo docker compose up --build
+```
+
+After the stack is up, log in to CTFd as an admin and finish configuration (worker nodes, registry, port ranges, limits) under `/admin/docker_manager`.

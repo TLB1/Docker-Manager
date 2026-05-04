@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import random
+import socket
 import subprocess
 import tarfile
 import secrets
@@ -79,6 +80,24 @@ def _make_docker_client_over_ssh(ssh_pool: SSHPool, node: Node) -> DockerClient:
     return DockerClient(base_url=f"ssh://{node.name}@{node.address}")
 
 
+_SSH_PROBE_TIMEOUT = 3.0
+
+
+def _probe_ssh_port(address: str, port: int = 22, timeout: float = _SSH_PROBE_TIMEOUT) -> bool:
+    """Quick TCP probe so we can fail fast on unreachable workers.
+
+    docker-py / paramiko's connect() inherits the OS-level TCP timeout (tens
+    of seconds on Linux) when the host silently drops SYNs. That blocks the
+    Flask boot thread long enough that CTFd looks hung. A 3s probe lets us
+    bail out immediately while still tolerating slow but reachable hosts.
+    """
+    try:
+        with socket.create_connection((address, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def _build_docker_client(node: Node) -> Optional[DockerClient]:
     """
     Build a fresh DockerClient for *node* and enable SSH keepalive on the
@@ -94,6 +113,12 @@ def _build_docker_client(node: Node) -> Optional[DockerClient]:
     Returns None if the SSH transport cannot be established. Plugin load must
     survive an unreachable worker so admins can fix WORKER_NODES from the UI.
     """
+    if not _probe_ssh_port(node.address):
+        log.warning(
+            f"[DockerManager] {node} unreachable on port 22 (probe timed out); "
+            f"skipping connect"
+        )
+        return None
     try:
         client = DockerClient(base_url=f"ssh://{node.name}@{node.address}")
     except Exception as e:
@@ -233,20 +258,26 @@ class DockerManager:
         if retries is None:
             retries = RuntimeConfig.NODE_SSH_RETRIES
 
+        # Fast-path: if the node has no client (initial connect failed, or a
+        # prior reconnect couldn't recover it), don't churn through the retry
+        # loop — each attempt would block on a TCP timeout and stall startup.
+        # Try exactly one reconnect; on failure raise immediately so callers
+        # can move on. The node will retry on the next outer call.
+        if node.client is None:
+            try:
+                self._reconnect_node(node)
+            except Exception as re:
+                raise requests.exceptions.ConnectionError(
+                    f"Node {node} is not connected: {re}"
+                )
+
         last_exc = None
         for attempt in range(retries + 1):
+            if node.client is None:
+                # A previous reconnect inside this loop failed; don't loop
+                # further on a dead node — bail out with the last seen error.
+                break
             try:
-                if node.client is None:
-                    # Node was unreachable at startup (or last reconnect failed).
-                    # Try once per attempt to bring it back; if it still won't
-                    # connect, surface a clean transport error so callers don't
-                    # explode on AttributeError.
-                    try:
-                        self._reconnect_node(node)
-                    except Exception as re:
-                        raise requests.exceptions.ConnectionError(
-                            f"Node {node} is not connected: {re}"
-                        )
                 with node.ssh_semaphore:
                     return op(node.client)
             except _TRANSPORT_ERRORS as e:

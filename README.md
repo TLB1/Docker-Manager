@@ -48,6 +48,7 @@ git clone https://github.com/TLB1/Docker-Manager.git
 cd Docker-Manager
 ./install.sh
 ```
+After CTFd is up, log in and finish configuration (worker nodes, registry, port ranges, limits) under `Admin Panel -> Plugins -> Docker Settings`.
 
 ### Manual install
 If you'd rather not run the script, perform the same steps by hand from the plugin directory `CTFd/CTFd/plugins/Docker-Manager/`.
@@ -156,4 +157,4 @@ From the CTFd root:
 sudo docker compose up --build
 ```
 
-After the stack is up, log in to CTFd as an admin and finish configuration (worker nodes, registry, port ranges, limits) under `/admin/docker_manager`.
+After CTFd is up, log in and finish configuration (worker nodes, registry, port ranges, limits) under `Admin Panel -> Plugins -> Docker Settings`.

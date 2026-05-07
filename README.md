@@ -94,7 +94,7 @@ Add the proxy service to `services:`:
   ctfd-nginx-proxy:
     image: nginx:stable-alpine
     container_name: ctfd-nginx-proxy
-    restart: unless-stopped
+    restart: always
     volumes:
       - ./CTFd/plugins/Docker-Manager/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - proxy_data:/etc/nginx/data

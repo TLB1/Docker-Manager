@@ -1,0 +1,189 @@
+[ctfd]
+url = "http://challenges.ctf:8000"
+
+[ctfd.admin]
+username = "username"
+password = "password"
+api_token = ""
+
+[simulation]
+duration = 600
+default_users = 40
+starts_per_user = 1
+default_total_probes = 0
+default_probe_concurrency = 10
+pause_between_starts = [2, 5]
+stop_after_start = false
+
+[teams]
+join_password = "teampass123"
+
+[challenges]
+ids = []
+
+[probe]
+timeout = 30.0
+interval = 0.5
+
+[users]
+generated_password = "SimPass123!"
+
+[[users.pool]]
+name = "Maximus Conner"
+team = "Team Alpha"
+
+[[users.pool]]
+name = "Zaid Russell"
+team = "Team Neutron"
+
+[[users.pool]]
+name = "Elisabeth O'Doherty"
+team = "Team Beta"
+
+[[users.pool]]
+name = "Ishaan Nichols"
+team = "Team Gamma"
+
+[[users.pool]]
+name = "Lena Hartmann"
+team = "Team Delta"
+
+[[users.pool]]
+name = "Owen Delgado"
+team = "Team Omega"
+
+[[users.pool]]
+name = "Priya Banerjee"
+team = "Team Sigma"
+
+[[users.pool]]
+name = "Marcus Varela"
+team = "Team Orion"
+
+[[users.pool]]
+name = "Sofia Lindström"
+team = "Team Nova"
+
+[[users.pool]]
+name = "Ethan Kowalski"
+team = "Team Apex"
+
+[[users.pool]]
+name = "Amelia Rossi"
+team = "Team Zenith"
+
+[[users.pool]]
+name = "Noah Petrov"
+team = "Team Pulse"
+
+[[users.pool]]
+name = "Chloe Dubois"
+team = "Team Echo"
+
+[[users.pool]]
+name = "Lucas Almeida"
+team = "Team Vector"
+
+[[users.pool]]
+name = "Maya Chen"
+team = "Team Horizon"
+
+[[users.pool]]
+name = "Daniel Sørensen"
+team = "Team Vertex"
+
+[[users.pool]]
+name = "Fatima El Idrissi"
+team = "Team Atlas"
+
+[[users.pool]]
+name = "Julian Novak"
+team = "Team Nexus"
+
+[[users.pool]]
+name = "Ava Gallagher"
+team = "Team Quantum"
+
+[[users.pool]]
+name = "Mateo Silva"
+team = "Team Flux"
+
+[[users.pool]]
+name = "Hugo Bernard"
+team = "Team Cipher"
+
+[[users.pool]]
+name = "Anya Volkov"
+team = "Team Helix"
+
+[[users.pool]]
+name = "Tobias Andersen"
+team = "Team Phoenix"
+
+[[users.pool]]
+name = "Ravi Krishnan"
+team = "Team Quasar"
+
+[[users.pool]]
+name = "Isabella Moretti"
+team = "Team Solstice"
+
+[[users.pool]]
+name = "Jasper Whitlock"
+team = "Team Nebula"
+
+[[users.pool]]
+name = "Yuki Tanaka"
+team = "Team Drift"
+
+[[users.pool]]
+name = "Aleksander Nowak"
+team = "Team Spark"
+
+[[users.pool]]
+name = "Camille Laurent"
+team = "Team Onyx"
+
+[[users.pool]]
+name = "Diego Martinez"
+team = "Team Pioneer"
+
+[[users.pool]]
+name = "Saoirse Murphy"
+team = "Team Beacon"
+
+[[users.pool]]
+name = "Henrik Larsson"
+team = "Team Crest"
+
+[[users.pool]]
+name = "Aaliyah Johnson"
+team = "Team Forge"
+
+[[users.pool]]
+name = "Kenji Watanabe"
+team = "Team Halo"
+
+[[users.pool]]
+name = "Esme Fitzgerald"
+team = "Team Ridge"
+
+[[users.pool]]
+name = "Bruno Costa"
+team = "Team Summit"
+
+[[users.pool]]
+name = "Zara Ahmed"
+team = "Team Tundra"
+
+[[users.pool]]
+name = "Felix Brennan"
+team = "Team Vanguard"
+
+[[users.pool]]
+name = "Mira Patel"
+team = "Team Wisp"
+
+[[users.pool]]
+name = "Oskar Lindqvist"
+team = "Team Zephyr"

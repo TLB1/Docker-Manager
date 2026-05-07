@@ -164,6 +164,14 @@ class DockerManager:
         self._node_index = 0
         self._sync_events: dict[str, threading.Event] = {}
         self._sync_events_lock = threading.Lock()
+        # (tar_path, mtime_ns, size) -> image name. Avoids reopening the tar
+        # on every sync_tar_image call under concurrent challenge starts.
+        self._tar_image_cache: dict[tuple, str] = {}
+        self._tar_image_cache_lock = threading.Lock()
+        # Image names known to be present on every node. Lets sync_tar_image
+        # short-circuit without touching disk or SSH after the first success.
+        self._fully_synced_images: set[str] = set()
+        self._fully_synced_lock = threading.Lock()
         self._container_cache = ContainerCache(RuntimeConfig.CONTAINER_CACHE_TTL)
         # Per-(node, network-name) locks serialize concurrent check-and-create
         # calls so the same network can't be created twice in parallel.
@@ -1332,6 +1340,11 @@ class DockerManager:
             raise FileNotFoundError(tar_path)
 
         image = self._get_image_from_tar(tar_path)
+
+        with self._fully_synced_lock:
+            if image in self._fully_synced_images:
+                return
+
         proceed, event = self._acquire_sync(image)
         if not proceed:
             log.info(f"[DockerManager] sync_tar_image({image}): already in progress, waiting…")
@@ -1364,12 +1377,24 @@ class DockerManager:
             log.info(f"\nChecking image: {image}\n")
             with ThreadPoolExecutor(max_workers=len(self.nodes)) as executor:
                 results = [f.result() for f in as_completed(executor.submit(sync_host, n) for n in self.nodes)]
-            status = "synced to all nodes." if all(results) else "sync completed with errors."
-            log.info(f"{image} {status}")
+            if all(results):
+                with self._fully_synced_lock:
+                    self._fully_synced_images.add(image)
+                log.info(f"{image} synced to all nodes.")
+            else:
+                log.info(f"{image} sync completed with errors.")
         finally:
             self._release_sync(image)
 
     def _get_image_from_tar(self, tar_path: str) -> str:
+        st = os.stat(tar_path)
+        key = (tar_path, st.st_mtime_ns, st.st_size)
+        cached = self._tar_image_cache.get(key)
+        if cached is not None:
+            return cached
         with tarfile.open(tar_path, "r") as tar:
             manifest = json.load(tar.extractfile("manifest.json"))
-            return manifest[0]["RepoTags"][0]
+            image = manifest[0]["RepoTags"][0]
+        with self._tar_image_cache_lock:
+            self._tar_image_cache[key] = image
+        return image

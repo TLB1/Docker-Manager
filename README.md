@@ -35,7 +35,9 @@
 <img height="250" alt="image" src="https://github.com/user-attachments/assets/fb1c09f5-4cfe-4e38-abc7-aed4c47793ca" />
 <img height="250" alt="image" src="https://github.com/user-attachments/assets/b2ca007b-5c4e-4d66-9dfa-7ec6a31c39f9" />
 <img height="250" alt="image" src="https://github.com/user-attachments/assets/e41af070-8767-4a2d-978a-52fb1e2a26dd" />
-<img height="250" alt="image" src="https://github.com/user-attachments/assets/458137b0-6798-419e-ad67-3b52931b32af" />
+<img height="250" alt="image" src="https://github.com/user-attachments/assets/394fc063-a235-4575-a3f9-150dc24e4aaa" />
+<img height="250" alt="image" src="https://github.com/user-attachments/assets/ebe7da2c-c995-4790-95e0-72b517421d04" />
+
 
 <img height="250" alt="image" src="https://github.com/user-attachments/assets/0c031da3-5c26-453a-ba0b-e7fd8f67635f" />
 
@@ -48,6 +50,7 @@ git clone https://github.com/TLB1/Docker-Manager.git
 cd Docker-Manager
 ./install.sh
 ```
+After CTFd is up, log in and finish configuration (worker nodes, registry, port ranges, limits) under `Admin Panel -> Plugins -> Docker Settings`.
 
 ### Manual install
 If you'd rather not run the script, perform the same steps by hand from the plugin directory `CTFd/CTFd/plugins/Docker-Manager/`.
@@ -156,4 +159,4 @@ From the CTFd root:
 sudo docker compose up --build
 ```
 
-After the stack is up, log in to CTFd as an admin and finish configuration (worker nodes, registry, port ranges, limits) under `/admin/docker_manager`.
+After CTFd is up, log in and finish configuration (worker nodes, registry, port ranges, limits) under `Admin Panel -> Plugins -> Docker Settings`.

@@ -51,12 +51,21 @@ class PortsManager:
             if host == server_url
         }
 
-    def allocate_port(self, token: str, server_url: str) -> int:
+    def allocate_port(
+        self,
+        token: str,
+        server_url: str,
+        extra_used: "set[int] | frozenset[int]" = frozenset(),
+    ) -> int:
         """
         Allocate the PRIMARY node host port for a container (HTTP proxy path).
         Stores under the plain token key — the existing contract for nginx/backend lookup.
+
+        ``extra_used`` is unioned with the local view so the caller can include
+        ports allocated by other gunicorn workers (discovered via Docker scan)
+        and avoid double-binding the same host port.
         """
-        used = self._used_node_ports(server_url)
+        used = self._used_node_ports(server_url) | set(extra_used)
         for port in range(RuntimeConfig.INTERNAL_PORT_RANGE_START, RuntimeConfig.INTERNAL_PORT_RANGE_END):
             if port not in used:
                 self.allocated_ports[token] = (server_url, port)
@@ -65,7 +74,11 @@ class PortsManager:
         raise Exception(f"No free HTTP ports available on {server_url}")
 
     def allocate_extra_node_port(
-        self, token: str, container_port: int, server_url: str
+        self,
+        token: str,
+        container_port: int,
+        server_url: str,
+        extra_used: "set[int] | frozenset[int]" = frozenset(),
     ) -> int:
         """
         Allocate an additional node host port for a non-primary container port
@@ -75,7 +88,7 @@ class PortsManager:
         the primary token key and can be cleaned up by prefix on release.
         """
         key  = f"{token}:{container_port}"
-        used = self._used_node_ports(server_url)
+        used = self._used_node_ports(server_url) | set(extra_used)
         for port in range(RuntimeConfig.INTERNAL_PORT_RANGE_START, RuntimeConfig.INTERNAL_PORT_RANGE_END):
             if port not in used:
                 self.allocated_ports[key] = (server_url, port)

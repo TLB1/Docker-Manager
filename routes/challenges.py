@@ -452,11 +452,15 @@ def api_token_keepalive(token):
 @bp.route("/docker/api/token/<token>/backend")
 def get_backend(token):
     manager = current_app.docker_manager
-    server_url, port = manager.ports_manager.allocated_ports.get(token, (None, None))
-    if not server_url:
+    container = manager.get_container_by_token(token)
+    if not container:
+        return "", 404
+    node_addr = container.labels.get(DockerLabels.NODE_ADDRESS)
+    host_port = container.labels.get(DockerLabels.PRIMARY_HOST_PORT)
+    if not node_addr or not host_port:
         return "", 404
     response = make_response("", 200)
-    response.headers["X-Backend"] = f"{server_url}:{port}"
+    response.headers["X-Backend"] = f"{node_addr}:{host_port}"
     return response
 
 

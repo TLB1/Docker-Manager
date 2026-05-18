@@ -5,3 +5,5 @@ class DockerLabels:
     TOKEN = "ctfd-token"
     CONTAINER_INDEX = "ctfd-container-index"
     NETWORK_ALIAS = "ctfd-network-alias"
+    NODE_ADDRESS = "ctfd-node-address"
+    PRIMARY_HOST_PORT = "ctfd-primary-host-port"

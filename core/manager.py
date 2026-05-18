@@ -427,6 +427,45 @@ class DockerManager:
         )
         return containers[0] if containers else None
 
+    def _discover_used_host_ports(self, node: Node) -> set:
+        """Return host ports currently bound by CTFd-labelled containers on
+        *node*, read live from Docker.
+
+        Used at allocation time so the picker doesn't collide with a port
+        another gunicorn worker just allocated; its in-process
+        ``PortsManager.allocated_ports`` is invisible to us. Returns an empty
+        set if the node is unreachable so allocation can still fall back to
+        the local view rather than failing the whole create.
+        """
+        try:
+            containers = self._node_call(
+                node,
+                lambda c: c.containers.list(
+                    all=True,
+                    filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                ),
+            )
+        except Exception as e:
+            log.warning(
+                f"[DockerManager] _discover_used_host_ports({node}) failed: {e}"
+            )
+            return set()
+
+        used: set = set()
+        for c in containers:
+            ports = (c.attrs.get("NetworkSettings") or {}).get("Ports") or {}
+            for bindings in ports.values():
+                if not bindings:
+                    continue
+                for binding in bindings:
+                    hp = binding.get("HostPort")
+                    if hp:
+                        try:
+                            used.add(int(hp))
+                        except ValueError:
+                            pass
+        return used
+
     def _find_node_for_container(self, container: Container) -> Optional[Node]:
         """Return the Node that owns *container*, or None."""
         for node in self.nodes:
@@ -600,10 +639,11 @@ class DockerManager:
         When expose_port=False no host port is allocated or bound -
         the container is only reachable from within the challenge network.
         """
-        token = f"{secrets.randbits(48):08x}"
+        token = f"{secrets.randbits(48):012x}"
 
         # ── Build port bindings ──────────────────────────────────────────
         docker_ports: Dict[str, Optional[int]] = {}
+        primary_hp: Optional[int] = None
 
         if expose_port:
             if port_mappings:
@@ -618,15 +658,24 @@ class DockerManager:
             if not ports_to_bind:
                 ports_to_bind = [{"container_port": 80, "http": True}]
 
+            # Cross-worker safety: other gunicorn workers' allocations are not
+            # in our PortsManager dict. Ask Docker which host ports are
+            # actually bound on this node before picking.
+            externally_used = self._discover_used_host_ports(node)
+
             # Primary port
             primary_cp = ports_to_bind[0]["container_port"]
-            primary_hp = self.ports_manager.allocate_port(token, node.address)
+            primary_hp = self.ports_manager.allocate_port(token, node.address, externally_used)
+            externally_used.add(primary_hp)
             docker_ports[f"{primary_cp}/tcp"] = primary_hp
 
             # Additional ports
             for pm in ports_to_bind[1:]:
                 cp = pm["container_port"]
-                hp = self.ports_manager.allocate_extra_node_port(token, cp, node.address)
+                hp = self.ports_manager.allocate_extra_node_port(
+                    token, cp, node.address, externally_used
+                )
+                externally_used.add(hp)
                 docker_ports[f"{cp}/tcp"] = hp
                 if not pm.get("http", True):
                     self.ports_manager.allocate_tcp_port(token, cp, node.address, hp)
@@ -643,13 +692,19 @@ class DockerManager:
         )
 
         # ── Build run kwargs ─────────────────────────────────────────────
+        # NODE_ADDRESS + PRIMARY_HOST_PORT are stamped here so /backend can
+        # resolve a token without consulting in-process PortsManager state.
+        # Required for correctness under WORKERS>1.
         labels = {
             DockerLabels.CTFD: "true",
             DockerLabels.TEAM: str(team_id),
             DockerLabels.CHALLENGE: str(challenge_id),
             DockerLabels.TOKEN: token,
             DockerLabels.CONTAINER_INDEX: str(container_index),
+            DockerLabels.NODE_ADDRESS: node.address,
         }
+        if primary_hp is not None:
+            labels[DockerLabels.PRIMARY_HOST_PORT] = str(primary_hp)
 
         # Deterministic name so a transport-error retry of containers.create()
         # collides with the prior partial success (Docker returns 409 instead of

@@ -33,12 +33,15 @@ _TRANSPORT_ERRORS = (
 from .labels import DockerLabels
 from .ssh import SSHPool
 from .config import RuntimeConfig
-from .ports import PortsManager
+from .ports import PortsManager, TcpPortMapping, STREAM_MAP_PATH
 from .registry import RegistryManager
-from .timer import RunnableTimer
 from .cache import ContainerCache, CachedContainer
 from ..models.node import Node
 from ..models.container import ContainerDetails
+
+
+KEEPALIVE_DIR = "/tmp/ctfd-keepalive"
+IDLE_SWEEP_INTERVAL = 30.0
 
 log = logging.getLogger(__name__)
 
@@ -135,6 +138,98 @@ def _build_docker_client(node: Node) -> Optional[DockerClient]:
     return client
 
 
+# ── Idle sweeper ────────────────────────────────────────────────────────────
+
+
+class IdleSweeper(threading.Thread):
+    """Periodic poller that suspends / removes idle CTFd containers.
+
+    Replaces the per-token threading.Timer scheme. The timers were per-worker,
+    so keepalives arriving at a different gunicorn worker did not renew them
+    and containers were getting suspended despite active traffic. The sweeper
+    instead reads the SHARED keepalive-file mtimes; every worker sees the
+    same lease state regardless of which one received the most recent
+    keepalive; and acts when a token crosses the configured thresholds.
+
+    All actions (suspend_container / remove_container) are idempotent on
+    Docker, so the same sweep firing on N workers near-simultaneously
+    produces at most one effective state change.
+    """
+
+    def __init__(self, manager: "DockerManager", interval: float):
+        super().__init__(daemon=True, name="ctfd-idle-sweeper")
+        self.manager = manager
+        self.interval = interval
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        self._stop_event.set()
+
+    def run(self):
+        # First sweep is deferred by `interval` so the sweeper doesn't race
+        # with the startup delete_all() that's about to wipe everything.
+        while not self._stop_event.wait(self.interval):
+            try:
+                self._sweep_once()
+            except Exception as e:
+                log.error(f"[IdleSweeper] sweep failed: {e}")
+
+    def _sweep_once(self):
+        # Collect every CTFd-labelled container across every node. If a node
+        # is unreachable we skip orphan-file cleanup so files for containers
+        # we couldn't see don't get treated as orphans.
+        containers_by_token: Dict[str, Container] = {}
+        complete_view = True
+        for node in self.manager.nodes:
+            try:
+                containers = self.manager._node_call(
+                    node,
+                    lambda c: c.containers.list(
+                        all=True,
+                        filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                    ),
+                )
+            except Exception as e:
+                log.debug(f"[IdleSweeper] list failed on {node}: {e}")
+                complete_view = False
+                continue
+            for c in containers:
+                token = c.labels.get(DockerLabels.TOKEN)
+                if token:
+                    containers_by_token[token] = c
+
+        suspension_interval = RuntimeConfig.CONTAINER_SUSPENSION_INTERVAL
+        lifetime = RuntimeConfig.DOCKER_CONTAINER_LIFETIME
+
+        for token, container in containers_by_token.items():
+            age = self.manager._keepalive_age(token)
+            if age is None:
+                # Container exists with no keepalive record; either freshly
+                # created (set_timers will touch shortly) or survived a CTFd
+                # restart that wiped /tmp. Give it a fresh lease so we don't
+                # immediately kill survivors.
+                self.manager._touch_keepalive(token)
+                continue
+            if age >= lifetime:
+                # Idempotent across workers; remove_container handles
+                # already-removed by returning False without raising.
+                self.manager.remove_container(token)
+                continue
+            if container.status == "running" and age >= suspension_interval:
+                self.manager.suspend_container(token)
+
+        # Sweep keepalive files whose container no longer exists.
+        if complete_view:
+            try:
+                for fname in os.listdir(KEEPALIVE_DIR):
+                    if fname not in containers_by_token:
+                        self.manager._remove_keepalive(fname)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                log.debug(f"[IdleSweeper] orphan cleanup failed: {e}")
+
+
 # ── Manager ─────────────────────────────────────────────────────────────────
 
 class DockerManager:
@@ -159,8 +254,6 @@ class DockerManager:
 
         self.ports_manager = PortsManager()
         self.registry = RegistryManager()
-        self.timer_timeout = RunnableTimer()
-        self.timer_kill = RunnableTimer()
         self._node_index = 0
         self._sync_events: dict[str, threading.Event] = {}
         self._sync_events_lock = threading.Lock()
@@ -178,32 +271,19 @@ class DockerManager:
         self._network_locks: dict[tuple, threading.Lock] = {}
         self._network_locks_lock = threading.Lock()
 
-        # Rearm timers for any ctfd-labelled containers already present. This
-        # is a no-op in the common case because load() calls delete_all right
-        # after __init__, but if delete_all fails on a specific container
-        # (e.g. transient SSH error on one node) the survivor would otherwise
-        # be left without a kill timer and linger forever. set_timers uses
-        # absolute durations, so each survivor gets a fresh suspension + kill
-        # cycle rather than inheriting stale timestamps.
-        self._rearm_existing_timers()
-
-    def _rearm_existing_timers(self):
-        for node in self.nodes:
-            try:
-                containers = self._node_call(
-                    node,
-                    lambda c: c.containers.list(
-                        all=True,
-                        filters={"label": [f"{DockerLabels.CTFD}=true"]},
-                    ),
-                )
-            except Exception as e:
-                log.warning(f"[DockerManager] rearm: list failed on {node}: {e}")
-                continue
-            for container in containers:
-                token = container.labels.get(DockerLabels.TOKEN)
-                if token:
-                    self.set_timers(token)
+        # Lease tracking moved from per-token threading.Timer (per-worker, lost
+        # across workers and across worker recycling) to a keepalive-file mtime
+        # model. Every keepalive touches a file at KEEPALIVE_DIR/<token>; a
+        # background IdleSweeper scans CTFd containers periodically and calls
+        # suspend/remove based on file age. Workers' actions are idempotent so
+        # N concurrent sweepers across workers is safe; first one wins, the
+        # rest are no-ops.
+        try:
+            os.makedirs(KEEPALIVE_DIR, exist_ok=True)
+        except OSError as e:
+            log.warning(f"[DockerManager] could not create {KEEPALIVE_DIR}: {e}")
+        self._idle_sweeper = IdleSweeper(self, IDLE_SWEEP_INTERVAL)
+        self._idle_sweeper.start()
 
     # ------------------------------------------------------------------ #
     # Nginx                                                                #
@@ -348,17 +428,46 @@ class DockerManager:
     # Timers                                                               #
     # ------------------------------------------------------------------ #
 
+    # ------------------------------------------------------------------ #
+    # Keepalive (idle lease) tracking                                      #
+    # ------------------------------------------------------------------ #
+
+    def _keepalive_path(self, token: str) -> str:
+        return os.path.join(KEEPALIVE_DIR, token)
+
+    def _touch_keepalive(self, token: str):
+        path = self._keepalive_path(token)
+        try:
+            # Use Path.touch for atomic create-or-update of mtime.
+            from pathlib import Path
+            Path(path).touch(exist_ok=True)
+        except OSError as e:
+            log.warning(f"[DockerManager] keepalive touch failed for {token}: {e}")
+
+    def _keepalive_age(self, token: str) -> Optional[float]:
+        try:
+            return time.time() - os.path.getmtime(self._keepalive_path(token))
+        except OSError:
+            return None
+
+    def _remove_keepalive(self, token: str):
+        try:
+            os.remove(self._keepalive_path(token))
+        except OSError:
+            pass
+
     def set_timers(self, token: str):
-        self.timer_timeout.startOrRenew(
-            token,
-            RuntimeConfig.CONTAINER_SUSPENSION_INTERVAL,
-            lambda: self.suspend_container(token),
-        )
-        self.timer_kill.startOrRenew(
-            token,
-            RuntimeConfig.DOCKER_CONTAINER_LIFETIME,
-            lambda: self.remove_container(token),
-        )
+        """Refresh the idle lease for *token*.
+
+        Replaces the previous threading.Timer-based scheduling — workers no
+        longer own per-token timers. The IdleSweeper background thread polls
+        keepalive file mtimes and triggers suspend/remove when a container
+        crosses CONTAINER_SUSPENSION_INTERVAL / DOCKER_CONTAINER_LIFETIME
+        seconds of idleness. Kept under the original name because all the
+        callers (create, resume, keepalive route) want the same effect:
+        "the container received traffic right now."
+        """
+        self._touch_keepalive(token)
 
     # ------------------------------------------------------------------ #
     # Container queries                                                    #
@@ -465,6 +574,122 @@ class DockerManager:
                         except ValueError:
                             pass
         return used
+
+    def _discover_used_ctfd_tcp_ports(self) -> set:
+        """Return CTFd-side TCP ports currently claimed by any CTFd container
+        across any node, read from the TCP_MAPPINGS label.
+
+        Used at allocation time so two workers can't pick the same external
+        TCP port for different containers.
+        """
+        used: set = set()
+        for node in self.nodes:
+            try:
+                containers = self._node_call(
+                    node,
+                    lambda c: c.containers.list(
+                        all=True,
+                        filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                    ),
+                )
+            except Exception as e:
+                log.warning(
+                    f"[DockerManager] _discover_used_ctfd_tcp_ports on {node} failed: {e}"
+                )
+                continue
+            for c in containers:
+                raw = c.labels.get(DockerLabels.TCP_MAPPINGS)
+                if not raw:
+                    continue
+                try:
+                    mappings = json.loads(raw)
+                except Exception:
+                    continue
+                for m in mappings:
+                    p = m.get("ctfd_tcp_port")
+                    if isinstance(p, int):
+                        used.add(p)
+        return used
+
+    def get_tcp_mappings_for_token(self, token: str) -> List[TcpPortMapping]:
+        """Return the TCP mapping list for *token* read from the container's
+        Docker label. Source of truth across gunicorn workers; the per-worker
+        ``PortsManager.tcp_mappings`` only sees allocations made by that
+        worker.
+        """
+        container = self.get_container_by_token(token)
+        if not container:
+            return []
+        raw = container.labels.get(DockerLabels.TCP_MAPPINGS)
+        if not raw:
+            return []
+        try:
+            return [TcpPortMapping(**m) for m in json.loads(raw)]
+        except Exception:
+            return []
+
+    def update_proxy(self):
+        """Regenerate the nginx stream map config from TCP_MAPPINGS labels on
+        every CTFd container across every node, then signal nginx to reload.
+
+        Replaces the previous PortsManager.update_proxy which wrote the config
+        from the local in-memory ``tcp_mappings`` dict; under WORKERS>1 each
+        worker only sees its own allocations, so the file got clobbered to
+        whichever worker called update_proxy last.
+        """
+        lines: list = []
+        seen: set = set()
+        for node in self.nodes:
+            try:
+                containers = self._node_call(
+                    node,
+                    lambda c: c.containers.list(
+                        all=True,
+                        filters={"label": [f"{DockerLabels.CTFD}=true"]},
+                    ),
+                )
+            except Exception as e:
+                log.warning(f"[DockerManager] update_proxy list failed on {node}: {e}")
+                continue
+            for c in containers:
+                raw = c.labels.get(DockerLabels.TCP_MAPPINGS)
+                if not raw:
+                    continue
+                try:
+                    mappings = json.loads(raw)
+                except Exception:
+                    continue
+                for m in mappings:
+                    p = m.get("ctfd_tcp_port")
+                    if p in seen:
+                        continue
+                    seen.add(p)
+                    lines += [
+                        "server {",
+                        f"    listen              {p};",
+                        f"    proxy_pass          {m['node_addr']}:{m['node_host_port']};",
+                        "    proxy_connect_timeout 5s;",
+                        "    proxy_timeout       10m;",
+                        "}",
+                        "",
+                    ]
+
+        tmp_path = STREAM_MAP_PATH + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(STREAM_MAP_PATH), exist_ok=True)
+            with open(tmp_path, "w") as f:
+                f.write("\n".join(lines))
+            os.replace(tmp_path, STREAM_MAP_PATH)
+        except Exception as e:
+            log.error(f"[DockerManager] Failed to write stream map: {e}")
+            return
+
+        try:
+            client = docker.from_env()
+            container = client.containers.get("ctfd-nginx-proxy")
+            container.exec_run("nginx -s reload")
+        except Exception as e:
+            log.warning(f"[DockerManager] nginx reload failed: {e}")
 
     def _find_node_for_container(self, container: Container) -> Optional[Node]:
         """Return the Node that owns *container*, or None."""
@@ -636,7 +861,7 @@ class DockerManager:
         bridge - useful for single-container challenges that don't need
         inter-container communication.
 
-        When expose_port=False no host port is allocated or bound -
+        When expose_port=False no host port is allocated or bound;
         the container is only reachable from within the challenge network.
         """
         token = f"{secrets.randbits(48):012x}"
@@ -644,6 +869,7 @@ class DockerManager:
         # ── Build port bindings ──────────────────────────────────────────
         docker_ports: Dict[str, Optional[int]] = {}
         primary_hp: Optional[int] = None
+        has_tcp_mappings = False
 
         if expose_port:
             if port_mappings:
@@ -662,6 +888,8 @@ class DockerManager:
             # in our PortsManager dict. Ask Docker which host ports are
             # actually bound on this node before picking.
             externally_used = self._discover_used_host_ports(node)
+            # Same for the CTFd-side TCP range — read from labels across nodes.
+            tcp_used = self._discover_used_ctfd_tcp_ports()
 
             # Primary port
             primary_cp = ports_to_bind[0]["container_port"]
@@ -678,12 +906,18 @@ class DockerManager:
                 externally_used.add(hp)
                 docker_ports[f"{cp}/tcp"] = hp
                 if not pm.get("http", True):
-                    self.ports_manager.allocate_tcp_port(token, cp, node.address, hp)
+                    p = self.ports_manager.allocate_tcp_port(
+                        token, cp, node.address, hp, tcp_used
+                    )
+                    tcp_used.add(p)
+                    has_tcp_mappings = True
 
             if not ports_to_bind[0].get("http", True):
-                self.ports_manager.allocate_tcp_port(
-                    token, primary_cp, node.address, primary_hp
+                p = self.ports_manager.allocate_tcp_port(
+                    token, primary_cp, node.address, primary_hp, tcp_used
                 )
+                tcp_used.add(p)
+                has_tcp_mappings = True
 
         log.info(
             f"[DockerManager] Starting {image} [{container_index}] on {node.address} "
@@ -705,6 +939,20 @@ class DockerManager:
         }
         if primary_hp is not None:
             labels[DockerLabels.PRIMARY_HOST_PORT] = str(primary_hp)
+        if has_tcp_mappings:
+            # Serialize the TCP mapping list onto the container itself so
+            # update_proxy() can rebuild the nginx stream map from a fresh
+            # Docker scan, independent of which worker did the allocation.
+            tcp_label = [
+                {
+                    "ctfd_tcp_port": m.ctfd_tcp_port,
+                    "node_addr": m.node_addr,
+                    "node_host_port": m.node_host_port,
+                    "container_port": m.container_port,
+                }
+                for m in self.ports_manager.tcp_mappings.get(token, [])
+            ]
+            labels[DockerLabels.TCP_MAPPINGS] = json.dumps(tcp_label)
 
         # Deterministic name so a transport-error retry of containers.create()
         # collides with the prior partial success (Docker returns 409 instead of
@@ -853,6 +1101,14 @@ class DockerManager:
         except Exception:
             pass
         self._container_cache.add(CachedContainer.from_docker(container, node.address))
+        # Start the idle lease so the IdleSweeper doesn't mistake a freshly
+        # created container for an orphan.
+        self._touch_keepalive(token)
+        # Regenerate nginx stream map if this container introduced new TCP
+        # mappings. Scans Docker labels so other workers' allocations are
+        # included too.
+        if has_tcp_mappings:
+            self.update_proxy()
         return token
 
     # ------------------------------------------------------------------ #
@@ -1029,21 +1285,18 @@ class DockerManager:
                 any_query_failed = True
 
         if not matches:
-            if any_query_failed:
+            # Container is genuinely gone on the nodes we could reach. Drop
+            # the keepalive file so the sweeper doesn't keep targeting this
+            # token. If the lookup was inconclusive (some node unreachable),
+            # leave the file so the next sweep cycle retries.
+            if not any_query_failed:
+                self._remove_keepalive(token)
+            else:
                 log.warning(
                     f"[DockerManager] remove_container({token}): lookup inconclusive; "
-                    f"rescheduling kill in 60s."
-                )
-                self.timer_kill.startOrRenew(
-                    token, 60, lambda: self.remove_container(token)
+                    f"sweeper will retry next cycle."
                 )
             return False
-
-        # Only cancel timers once we've confirmed at least one container exists.
-        # If we cancelled on an inconclusive lookup we'd throw away the kill
-        # timer for a container we couldn't actually verify was gone.
-        self.timer_timeout.cancel(token)
-        self.timer_kill.cancel(token)
 
         challenge_id = matches[0][1].labels.get(DockerLabels.CHALLENGE)
         team_id = matches[0][1].labels.get(DockerLabels.TEAM)
@@ -1069,18 +1322,19 @@ class DockerManager:
         if not all_removed:
             log.warning(
                 f"[DockerManager] Failed to remove all containers for token {token} "
-                f"(last error: {last_error}); rescheduling kill in 60s."
-            )
-            self.timer_kill.startOrRenew(
-                token, 60, lambda: self.remove_container(token)
+                f"(last error: {last_error}); sweeper will retry next cycle."
             )
             return False
 
         self._container_cache.remove(token)
         self.ports_manager.release_port(token)
+        self._remove_keepalive(token)
         if challenge_id:
             for node in removed_nodes:
                 self._cleanup_challenge_network(node, challenge_id, team_id)
+        # The container's TCP_MAPPINGS label (if any) is gone with the
+        # container, so regenerate the nginx stream map.
+        self.update_proxy()
         return True
 
     def delete_all(self) -> int:
@@ -1115,33 +1369,30 @@ class DockerManager:
                         lambda c, _cid=cid: c.containers.get(_cid).remove(force=True),
                     )
                 except NotFound:
-                    # Already gone; drop any lingering timers and move on.
+                    # Already gone; drop the keepalive lease and move on.
                     if token:
-                        self.timer_timeout.cancel(token)
-                        self.timer_kill.cancel(token)
+                        self._remove_keepalive(token)
                     continue
                 except Exception as e:
-                    # Remove failed: leave the existing timers in place, and if
-                    # the container has none (e.g. lost across a restart),
-                    # re-arm a short kill so we retry shortly. Cancelling here
-                    # would orphan the container forever.
+                    # Remove failed: leave the keepalive file in place — the
+                    # IdleSweeper sees it stay old and retries on its next
+                    # cycle. Deleting it now would let an orphan linger
+                    # forever.
                     log.error(f"Failed removing container {cid[:12]}: {e}")
-                    if token:
-                        self.timer_kill.startOrRenew(
-                            token, 60, lambda t=token: self.remove_container(t)
-                        )
                     continue
 
-                # Removed successfully; now it's safe to cancel timers and
-                # release the host port.
+                # Removed successfully; release the host port and drop the
+                # keepalive lease so the sweeper stops targeting it.
                 if token:
-                    self.timer_timeout.cancel(token)
-                    self.timer_kill.cancel(token)
                     self.ports_manager.release_port(token)
+                    self._remove_keepalive(token)
                 removed += 1
 
         self._container_cache.clear()
         self._purge_challenge_networks()
+        # Stream map reflects live TCP labels; with everything gone, write an
+        # empty config and reload nginx.
+        self.update_proxy()
         return removed
 
     # ------------------------------------------------------------------ #

@@ -115,14 +115,19 @@ class PortsManager:
         container_port: int,
         node_addr: str,
         node_host_port: int,
+        extra_used: "set[int] | frozenset[int]" = frozenset(),
     ) -> int:
         """
         Allocate a CTFd-side TCP port for a non-HTTP container port and store
         the full mapping so the caller can configure an external TCP proxy.
 
+        ``extra_used`` is unioned with the local view so the caller can pass
+        TCP ports already claimed by other workers' containers (read from
+        Docker labels) and avoid double-binding.
+
         Returns the allocated CTFd TCP port number.
         """
-        used = self._used_ctfd_tcp_ports()
+        used = self._used_ctfd_tcp_ports() | set(extra_used)
         for port in range(RuntimeConfig.TCP_PORT_RANGE_START, RuntimeConfig.TCP_PORT_RANGE_END):
             if port not in used:
                 mapping = TcpPortMapping(
@@ -136,7 +141,11 @@ class PortsManager:
                     f"tcp://{RuntimeConfig.CTFD_DOMAIN_NAME}:{port} → "
                     f"{node_addr}:{node_host_port} (container:{container_port})"
                 )
-                self.update_proxy()
+                # update_proxy is no longer triggered here. The caller stamps
+                # the TCP mapping list as a Docker label on the container at
+                # creation, and DockerManager regenerates the nginx stream map
+                # by scanning labels across all nodes — works under WORKERS>1
+                # where per-worker self.tcp_mappings diverges.
                 return port
         raise Exception("No free TCP ports available in the configured range")
 
@@ -161,51 +170,6 @@ class PortsManager:
         # CTFd TCP port mappings
         self.tcp_mappings.pop(token, None)
 
-    def update_proxy(self):
-        """
-        Regenerate the nginx stream map config from the current tcp_mappings
-        table and write it to disk.  One  server { }  block per active TCP
-        port mapping.
-        """
-        import os
-        import docker as _docker
- 
-        lines = []
-        for token, mappings in self.tcp_mappings.items():
-            for m in mappings:
-                lines += [
-                    "server {",
-                    f"    listen              {m.ctfd_tcp_port};",
-                    f"    proxy_pass          {m.node_addr}:{m.node_host_port};",
-                    "    proxy_connect_timeout 5s;",
-                    "    proxy_timeout       10m;",
-                    "}",
-                    "",
-                ]
- 
-        tmp_path = STREAM_MAP_PATH + ".tmp"
-        try:
-            os.makedirs(os.path.dirname(STREAM_MAP_PATH), exist_ok=True)
-            with open(tmp_path, "w") as f:
-                f.write("\n".join(lines))
-            os.replace(tmp_path, STREAM_MAP_PATH)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(
-                f"[PortsManager] Failed to write stream map: {e}"
-            )
-            return
- 
-        # Signal nginx to reload its stream config
-        try:
-            client    = _docker.from_env()
-            container = client.containers.get("ctfd-nginx-proxy")
-            container.exec_run("nginx -s reload")
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                f"[PortsManager] nginx reload failed: {e}"
-            )  
     # ------------------------------------------------------------------ #
     # Lookup helpers                                                       #
     # ------------------------------------------------------------------ #

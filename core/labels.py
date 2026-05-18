@@ -7,3 +7,4 @@ class DockerLabels:
     NETWORK_ALIAS = "ctfd-network-alias"
     NODE_ADDRESS = "ctfd-node-address"
     PRIMARY_HOST_PORT = "ctfd-primary-host-port"
+    TCP_MAPPINGS = "ctfd-tcp-mappings"

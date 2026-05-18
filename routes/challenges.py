@@ -171,9 +171,13 @@ def _container_status_list(manager, actor_name, challenge_id, configs):
 
             # Enrich each port_mapping with live TCP allocation info so the
             # frontend can display  hostname:NNNNN  for TCP ports.
+            # Source TCP mappings from the container's Docker label so the
+            # answer is the same on every gunicorn worker. The per-worker
+            # ports_manager.tcp_mappings dict only knows about allocations
+            # made by that worker.
             tcp_allocs = {
                 m.container_port: m
-                for m in manager.ports_manager.get_tcp_mappings(token)
+                for m in manager.get_tcp_mappings_for_token(token)
             }
             enriched = []
             for pm in cfg.port_mappings:
